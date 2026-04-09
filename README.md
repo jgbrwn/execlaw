@@ -27,7 +27,7 @@ ExeClaw is a web application that launches isolated [nullclaw](https://github.co
 <table>
 <tr>
 <td><img src="docs/screenshots/new-session.png" alt="New Session" width="400"/><br/><em>Session configuration</em></td>
-<td><img src="docs/screenshots/chat-session.png" alt="Chat Session" width="400"/><br/><em>Agent chat with JSON rendering</em></td>
+<td><img src="docs/screenshots/chat-session.png" alt="Chat Session" width="400"/><br/><em>Agent chat session</em></td>
 </tr>
 <tr>
 <td><img src="docs/screenshots/settings.png" alt="Settings" width="400"/><br/><em>Settings with idle timeout & exe.dev token</em></td>
@@ -80,30 +80,47 @@ ExeClaw is a web application that launches isolated [nullclaw](https://github.co
 | Markdown | marked.js + DOMPurify |
 | Platform | [exe.dev](https://exe.dev) |
 
-## 🚀 Deployment on exe.dev
+## 🚀 Deployment
 
-ExeClaw is designed to run on [exe.dev](https://exe.dev) VMs, which provide the KVM access and networking infrastructure needed for Firecracker.
+ExeClaw requires a Linux host with KVM support. It's designed to run on [exe.dev](https://exe.dev) VMs (which provide KVM, TAP networking, and email gateway), but works on any KVM-capable Linux server.
+
+### Automated Install (Recommended)
+
+The install script handles everything — building the binary, downloading Firecracker, building the VM rootfs with nullclaw, configuring networking, and installing the systemd service:
+
+```bash
+git clone https://github.com/jgbrwn/execlaw.git
+cd execlaw
+sudo ./install.sh
+```
+
+The script is idempotent — it skips steps that are already done. Re-run it safely at any time.
 
 ### Prerequisites
 
-- An [exe.dev](https://exe.dev) VM (provides KVM, TAP networking, email gateway)
-- Go 1.21+ installed
-- Firecracker binary at `/usr/local/bin/firecracker`
-- A Linux kernel and rootfs with nullclaw pre-installed (see `vm-assets/`)
+- Linux with KVM support (`/dev/kvm` accessible)
+- Go 1.21+
+- Ubuntu 22.04+ / Debian 12+ (for package management)
+- ~3GB disk space for VM assets
 
-### Quick Start
+### Manual Install
+
+If you prefer to do things manually:
 
 ```bash
-# Clone the repo
+# Clone and build
 git clone https://github.com/jgbrwn/execlaw.git
 cd execlaw
-
-# Build
 go build -o execlaw .
 
 # Set up VM assets (kernel + rootfs)
+# See docs/rootfs-setup.md for detailed instructions
 mkdir -p vm-assets
 # Place vmlinux kernel and rootfs.ext4 in vm-assets/
+
+# Configure networking
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo iptables -t nat -A POSTROUTING -o eth0 -s 10.200.0.0/16 -j MASQUERADE
 
 # Run directly
 ./execlaw
@@ -114,7 +131,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now execlaw
 ```
 
-The server listens on `:8000` by default. On exe.dev, it’s accessible at `https://VMNAME.exe.xyz:8000/`.
+The server listens on `:8000` by default. On exe.dev, it's accessible at `https://VMNAME.exe.xyz:8000/`.
 
 ### Configuration
 
@@ -143,6 +160,7 @@ The rootfs is not included in this repository due to size (~2GB). See the [rootf
 execlaw/
 ├── main.go              # Go backend (~2400 lines, pure stdlib)
 ├── go.mod               # Go module (zero dependencies)
+├── install.sh           # Automated install script
 ├── static/
 │   └── index.html       # Single-file SPA (~2800 lines)
 ├── vm-assets/
@@ -150,6 +168,7 @@ execlaw/
 │   └── rootfs.ext4      # Root filesystem (not in repo)
 ├── execlaw.service      # systemd unit file
 ├── docs/
+│   ├── rootfs-setup.md  # Manual rootfs build guide
 │   └── screenshots/     # UI screenshots
 ├── LICENSE              # MIT
 ├── NOTICE               # Third-party attributions

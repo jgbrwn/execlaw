@@ -559,8 +559,8 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 }
 .settings-card {
   background: var(--bg-secondary); border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg); padding: 28px 32px; max-width: 480px; width: 92%;
-  box-shadow: var(--shadow);
+  border-radius: var(--radius-lg); padding: 28px 32px; max-width: 520px; width: 92%;
+  box-shadow: var(--shadow); max-height: 85vh; overflow-y: auto;
 }
 .settings-card h3 { margin-bottom: 20px; font-size: 17px; }
 .settings-group { margin-bottom: 20px; }
@@ -602,6 +602,30 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
   background: var(--bg-tertiary); color: var(--text-primary);
 }
 .settings-actions .btn-settings-cancel:hover { background: var(--border-color); }
+.settings-group input[type="password"],
+.settings-group input[type="text"].settings-key-input {
+  width: 100%; padding: 6px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color); background: var(--bg-tertiary);
+  color: var(--text-primary); font-family: var(--font-mono); font-size: 12px;
+  box-sizing: border-box;
+}
+.settings-section-title {
+  font-size: 14px; font-weight: 700; color: var(--text-primary);
+  margin: 20px 0 12px; padding-top: 16px; border-top: 1px solid var(--border-color);
+}
+.settings-section-title:first-of-type { margin-top: 8px; padding-top: 0; border-top: none; }
+.saved-key-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--green); font-weight: 600;
+  padding: 3px 8px; border-radius: var(--radius-sm);
+  background: rgba(63, 185, 80, 0.1); border: 1px solid rgba(63, 185, 80, 0.2);
+}
+.saved-key-badge .override-link {
+  color: var(--accent); cursor: pointer; text-decoration: underline;
+  font-weight: 400;
+}
+.key-override-input { display: none; margin-top: 6px; }
+.key-override-input.visible { display: block; }
 
 /* ===== Diff Rendering ===== */
 .diff-view { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; overflow-x: auto; }
@@ -783,11 +807,12 @@ function randomSessionName() {
 
 function createSessionObj(id) {
   state.sessionCounter++;
+  const settings = getSettings();
   return {
     id,
     name: randomSessionName(),
     state: 'configuring', // configuring | connecting | active | error | closed
-    provider: 'openrouter',
+    provider: settings.defaultProvider || 'openrouter',
     model: '',
     apiKey: '',
     temperature: 0.7,
@@ -1211,10 +1236,16 @@ function getSettings() {
   const defaults = {
     idleTimeoutHours: 72,
     emailOnIdleKill: true,
+    defaultProvider: 'openrouter',
+    apiKeys: { openrouter: '', anthropic: '', openai: '' },
   };
   try {
     const stored = localStorage.getItem('execlaw_settings');
-    if (stored) return { ...defaults, ...JSON.parse(stored) };
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Merge apiKeys deeply
+      return { ...defaults, ...parsed, apiKeys: { ...defaults.apiKeys, ...(parsed.apiKeys || {}) } };
+    }
   } catch(e) {}
   return defaults;
 }
@@ -1228,14 +1259,43 @@ function showSettingsPopup() {
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
   const exeDevSection = state.isExeDev ? `
-      <div class="settings-group" style="margin-top:8px;padding-top:16px;border-top:1px solid var(--border-color)">
-        <label>🚀 exe.dev API Token</label>
-        <input type="password" id="settings-exedev-token" value="${escapeHtml(settings.exedevToken || '')}" placeholder="exe0.xxxxx or exe1.xxxxx" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border-color);background:var(--bg-tertiary);color:var(--text-primary);font-family:var(--font-mono);font-size:12px" />
-        <div class="settings-hint">Required for "Send to New VM" feature. Generate with: <code>ssh exe.dev token</code><br/>Your token is stored in your browser only and sent to exe.dev directly for authentication.</div>
+      <div class="settings-section-title">🚀 exe.dev Integration</div>
+      <div class="settings-group">
+        <label>exe.dev API Token</label>
+        <input type="password" id="settings-exedev-token" value="${escapeHtml(settings.exedevToken || '')}" placeholder="exe0.xxxxx or exe1.xxxxx" />
+        <div class="settings-hint">Required for "Send to New VM" feature. Generate with: <code>ssh exe.dev token</code></div>
       </div>` : '';
   overlay.innerHTML = `
-    <div class="settings-card">
+    <div class="settings-card" style="max-width:520px">
       <h3>⚙️ Settings</h3>
+
+      <div class="settings-section-title" style="margin-top:0;padding-top:0;border-top:none">🔑 API Keys</div>
+      <div class="settings-hint" style="margin-bottom:12px">Save API keys here so they auto-populate when creating new sessions. Keys are stored in your browser only.</div>
+
+      <div class="settings-group">
+        <label>Default Provider for New Sessions</label>
+        <select id="settings-default-provider">
+          <option value="openrouter" ${settings.defaultProvider==='openrouter'?'selected':''}>OpenRouter</option>
+          <option value="anthropic" ${settings.defaultProvider==='anthropic'?'selected':''}>Anthropic</option>
+          <option value="openai" ${settings.defaultProvider==='openai'?'selected':''}>OpenAI (ChatGPT)</option>
+        </select>
+        <div class="settings-hint">This provider will be pre-selected for new sessions (regardless of whether a key is saved).</div>
+      </div>
+
+      <div class="settings-group">
+        <label>OpenRouter API Key</label>
+        <input type="password" id="settings-key-openrouter" value="${escapeHtml(settings.apiKeys.openrouter || '')}" placeholder="sk-or-v1-..." />
+      </div>
+      <div class="settings-group">
+        <label>Anthropic API Key</label>
+        <input type="password" id="settings-key-anthropic" value="${escapeHtml(settings.apiKeys.anthropic || '')}" placeholder="sk-ant-api..." />
+      </div>
+      <div class="settings-group">
+        <label>OpenAI API Key</label>
+        <input type="password" id="settings-key-openai" value="${escapeHtml(settings.apiKeys.openai || '')}" placeholder="sk-..." />
+      </div>
+
+      <div class="settings-section-title">⏱️ Session Behavior</div>
 
       <div class="settings-group">
         <label>Session Idle Timeout</label>
@@ -1272,6 +1332,12 @@ function showSettingsPopup() {
     const newSettings = {
       idleTimeoutHours: Math.max(0.1, Math.min(168, hours)),
       emailOnIdleKill: emailKill ? emailKill.checked : true,
+      defaultProvider: document.getElementById('settings-default-provider').value,
+      apiKeys: {
+        openrouter: document.getElementById('settings-key-openrouter').value.trim(),
+        anthropic: document.getElementById('settings-key-anthropic').value.trim(),
+        openai: document.getElementById('settings-key-openai').value.trim(),
+      },
     };
     if (tokenInput) newSettings.exedevToken = tokenInput.value.trim();
     saveSettings(newSettings);
@@ -1700,8 +1766,9 @@ function createSessionPanel(id) {
   $main.appendChild(panel);
   bindConfigEvents(id);
   bindActiveEvents(id);
-  // Populate models
+  // Populate models and API key state
   updateModelDropdown(id);
+  updateApiKeyUI(id);
   // Show/hide exe.dev-only features
   updateExeDevVisibility();
 }
@@ -1727,9 +1794,13 @@ function buildConfigHTML(id, session) {
         </select>
       </div>
 
-      <div class="form-group">
+      <div class="form-group" id="apikey-group-${id}">
         <label>API Key</label>
-        <div class="input-wrapper">
+        <div class="saved-key-badge" id="saved-key-badge-${id}" style="display:none">
+          ✓ Using saved key
+          <span class="override-link" data-action="override-key">override</span>
+        </div>
+        <div class="input-wrapper" id="apikey-input-wrapper-${id}">
           <input type="password" data-field="apiKey" value="" placeholder="Enter your API key" autocomplete="off" />
           <div class="input-actions">
             <button class="btn-icon" data-action="toggle-key" title="Show/hide">👁</button>
@@ -1821,6 +1892,7 @@ function bindConfigEvents(id) {
     const session = state.sessions.get(id);
     session.provider = e.target.value;
     updateModelDropdown(id);
+    updateApiKeyUI(id);
   });
 
   // Model change
@@ -1837,6 +1909,16 @@ function bindConfigEvents(id) {
   // API Key clear
   config.querySelector('[data-action="clear-key"]').addEventListener('click', () => {
     config.querySelector('[data-field="apiKey"]').value = '';
+  });
+
+  // Override saved key
+  config.querySelector('[data-action="override-key"]').addEventListener('click', () => {
+    const badge = document.getElementById('saved-key-badge-' + id);
+    const wrapper = document.getElementById('apikey-input-wrapper-' + id);
+    badge.style.display = 'none';
+    wrapper.style.display = '';
+    wrapper.dataset.usingSavedKey = 'false';
+    wrapper.querySelector('[data-field="apiKey"]').focus();
   });
 
   // Advanced toggle
@@ -1914,6 +1996,26 @@ function bindActiveEvents(id) {
   }
 }
 
+function updateApiKeyUI(id) {
+  const session = state.sessions.get(id);
+  const settings = getSettings();
+  const savedKey = settings.apiKeys[session.provider] || '';
+  const badge = document.getElementById('saved-key-badge-' + id);
+  const wrapper = document.getElementById('apikey-input-wrapper-' + id);
+  if (!badge || !wrapper) return;
+
+  if (savedKey) {
+    badge.style.display = 'inline-flex';
+    wrapper.style.display = 'none';
+    // Mark that we're using the saved key
+    wrapper.dataset.usingSavedKey = 'true';
+  } else {
+    badge.style.display = 'none';
+    wrapper.style.display = '';
+    wrapper.dataset.usingSavedKey = 'false';
+  }
+}
+
 function updateModelDropdown(id) {
   const session = state.sessions.get(id);
   const config = document.getElementById('config-' + id);
@@ -1961,10 +2063,25 @@ async function fetchModels(provider) {
 async function launchSession(id) {
   const session = state.sessions.get(id);
   const config = document.getElementById('config-' + id);
-  const apiKey = config.querySelector('[data-field="apiKey"]').value.trim();
+  const wrapper = document.getElementById('apikey-input-wrapper-' + id);
+  const usingSaved = wrapper && wrapper.dataset.usingSavedKey === 'true';
+  let apiKey;
+
+  if (usingSaved) {
+    const settings = getSettings();
+    apiKey = settings.apiKeys[session.provider] || '';
+  } else {
+    apiKey = config.querySelector('[data-field="apiKey"]').value.trim();
+  }
 
   if (!apiKey) {
-    showToast('error', 'API Key Required', 'Please enter your API key to launch the session.');
+    showToast('error', 'API Key Required', 'Please enter your API key in the field below, or save one in ⚙️ Settings.');
+    if (usingSaved) {
+      // Show the input field since saved key is empty
+      const badge = document.getElementById('saved-key-badge-' + id);
+      if (badge) badge.style.display = 'none';
+      if (wrapper) wrapper.style.display = '';
+    }
     config.querySelector('[data-field="apiKey"]').focus();
     return;
   }
