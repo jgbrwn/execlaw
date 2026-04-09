@@ -565,11 +565,30 @@ function generateId() {
   return 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6);
 }
 
+const SESSION_ADJECTIVES = [
+  'Swift','Bright','Calm','Bold','Keen','Vivid','Noble','Eager','Lucid','Agile',
+  'Witty','Crisp','Deft','Warm','Cool','Sage','Neat','Zesty','Plush','Sleek',
+  'Brisk','Merry','Polar','Solar','Lunar','Amber','Azure','Coral','Ivory','Onyx',
+  'Rustic','Cosmic','Nimble','Steady','Gentle','Fierce','Subtle','Grand','Mystic','Radiant',
+];
+const SESSION_NOUNS = [
+  'Lobster','Falcon','Panda','Otter','Phoenix','Tiger','Raven','Dolphin','Fox','Wolf',
+  'Lynx','Hawk','Bear','Eagle','Owl','Cobra','Heron','Bison','Crane','Viper',
+  'Spark','Prism','Orbit','Quark','Nexus','Pulse','Forge','Bloom','Drift','Frost',
+  'Comet','Flare','Glint','Ember','Surge','Blaze','Shard','Crest','Vault','Zenith',
+];
+
+function randomSessionName() {
+  const adj = SESSION_ADJECTIVES[Math.floor(Math.random() * SESSION_ADJECTIVES.length)];
+  const noun = SESSION_NOUNS[Math.floor(Math.random() * SESSION_NOUNS.length)];
+  return adj + ' ' + noun;
+}
+
 function createSessionObj(id) {
   state.sessionCounter++;
   return {
     id,
-    name: 'Session ' + state.sessionCounter,
+    name: randomSessionName(),
     state: 'configuring', // configuring | connecting | active | error | closed
     provider: 'openrouter',
     model: '',
@@ -1021,7 +1040,7 @@ function bindConfigEvents(id) {
   // Name
   config.querySelector('[data-field="name"]').addEventListener('input', (e) => {
     const session = state.sessions.get(id);
-    session.name = e.target.value || ('Session ' + state.sessionCounter);
+    session.name = e.target.value || randomSessionName();
     renderTabBar();
   });
 

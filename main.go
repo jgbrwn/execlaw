@@ -589,7 +589,6 @@ func (s *Server) startVM(sess *Session, req CreateSessionRequest) {
 	hostIP := fmt.Sprintf("%s.%d.1/30", subnetPrefix, tapIdx)
 	guestIP := fmt.Sprintf("%s.%d.2", subnetPrefix, tapIdx)
 	guestGW := fmt.Sprintf("%s.%d.1", subnetPrefix, tapIdx)
-	guestMask := "255.255.255.252"
 	guestMAC := fmt.Sprintf("02:FC:00:00:%02X:%02X", (tapIdx>>8)&0xFF, tapIdx&0xFF)
 
 	// 2. Prepare rootfs.
@@ -684,9 +683,11 @@ func (s *Server) startVM(sess *Session, req CreateSessionRequest) {
 	}
 
 	// 5. Configure VM via Firecracker API.
+	// Use kernel ip= parameter for network config (more reliable than rc.local)
+	// Format: ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>
 	bootArgs := fmt.Sprintf(
-		"console=ttyS0 reboot=k panic=1 pci=off fc_ip=%s:::%s::eth0:off fc_gw=%s fc_dns=8.8.8.8",
-		guestIP, guestMask, guestGW,
+		"console=ttyS0 reboot=k panic=1 pci=off ip=%s::%s:255.255.255.252:nullclaw:eth0:off",
+		guestIP, guestGW,
 	)
 
 	// PUT /boot-source
