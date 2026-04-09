@@ -510,7 +510,8 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--accent); animation: pulse 1s infinite;
 }
-.agent-indicator .agent-text { animation: fadeIn 0.3s ease; }
+.agent-indicator .agent-text { animation: fadeIn 0.3s ease; display: inline; }
+.agent-indicator .agent-text .bold-letter { font-weight: 700; }
 
 /* ===== Memory Gauge ===== */
 .mem-gauge {
@@ -549,6 +550,71 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .sysinfo-bar-fill.green { background: var(--green); }
 .sysinfo-bar-fill.yellow { background: var(--yellow); }
 .sysinfo-bar-fill.red { background: var(--red); }
+
+/* ===== Settings Popup ===== */
+.settings-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 9200;
+  display: flex; align-items: center; justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+.settings-card {
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg); padding: 28px 32px; max-width: 480px; width: 92%;
+  box-shadow: var(--shadow);
+}
+.settings-card h3 { margin-bottom: 20px; font-size: 17px; }
+.settings-group { margin-bottom: 20px; }
+.settings-group label {
+  display: block; font-size: 13px; font-weight: 600; color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.settings-group .settings-hint {
+  font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4;
+}
+.settings-group input[type="number"] {
+  width: 120px; padding: 6px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color); background: var(--bg-tertiary);
+  color: var(--text-primary); font-family: var(--font-mono); font-size: 14px;
+}
+.settings-group select {
+  padding: 6px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color); background: var(--bg-tertiary);
+  color: var(--text-primary); font-size: 13px;
+}
+.settings-toggle {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+}
+.settings-toggle input[type="checkbox"] {
+  width: 18px; height: 18px; accent-color: var(--accent);
+}
+.settings-actions {
+  display: flex; gap: 10px; margin-top: 24px; justify-content: flex-end;
+}
+.settings-actions button {
+  padding: 8px 20px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600;
+  cursor: pointer; border: 1px solid var(--border-color); transition: all var(--transition);
+}
+.settings-actions .btn-settings-save {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.settings-actions .btn-settings-save:hover { opacity: 0.9; }
+.settings-actions .btn-settings-cancel {
+  background: var(--bg-tertiary); color: var(--text-primary);
+}
+.settings-actions .btn-settings-cancel:hover { background: var(--border-color); }
+
+/* ===== Diff Rendering ===== */
+.diff-view { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; overflow-x: auto; }
+.diff-view .diff-header { color: #e6edf3; font-weight: 700; padding: 2px 0; }
+.diff-view .diff-hunk { color: #9198a1; padding: 2px 0; }
+.diff-view .diff-add { background: rgba(63, 185, 80, 0.15); color: #7ee787; }
+.diff-view .diff-del { background: rgba(248, 81, 73, 0.15); color: #ff7b72; }
+.diff-view .diff-ctx { color: #e6edf3; }
+[data-theme="light"] .diff-view .diff-add { background: rgba(63, 185, 80, 0.2); color: #1a7f37; }
+[data-theme="light"] .diff-view .diff-del { background: rgba(248, 81, 73, 0.2); color: #cf222e; }
+[data-theme="light"] .diff-view .diff-ctx { color: #1f2328; }
+[data-theme="light"] .diff-view .diff-header { color: #1f2328; }
+[data-theme="light"] .diff-view .diff-hunk { color: #656d76; }
 
 /* ===== Media Styles ===== */
 .message-bubble video { max-width: 100%; border-radius: var(--radius-sm); margin: 8px 0; }
@@ -647,6 +713,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
         </svg>
         <span class="gauge-text" id="gauge-text">--%</span>
       </div>
+      <button class="btn-icon" id="btn-settings" title="Settings">⚙️</button>
       <button class="btn-icon" id="btn-email-all" title="Email all sessions">📧</button>
       <button class="btn-icon" id="btn-theme-toggle" title="Toggle theme">🌙</button>
       <button class="btn-icon" id="btn-about" title="About WebClaw">ℹ️</button>
@@ -779,10 +846,22 @@ const PROVIDER_LABELS = {
 };
 
 // ===== Marked Configuration =====
+// Simple syntax highlighter for JSON in code blocks
+function highlightJSON(text) {
+  // text is already HTML-escaped, so work with that
+  return text
+    .replace(/(&quot;)((?:[^&]|&(?!quot;))*)(&quot;)\s*:/g, '<span style="color:#7ee787">$1$2$3</span>:') // keys
+    .replace(/:\s*(&quot;)((?:[^&]|&(?!quot;))*)(&quot;)/g, ': <span style="color:#a5d6ff">$1$2$3</span>') // string values
+    .replace(/:\s*(\d+\.?\d*)/g, ': <span style="color:#79c0ff">$1</span>') // numbers
+    .replace(/:\s*(true|false)/g, ': <span style="color:#ff7b72">$1</span>') // booleans
+    .replace(/:\s*(null)/g, ': <span style="color:#ff7b72">$1</span>'); // null
+}
+
 const markedRenderer = new marked.Renderer();
 markedRenderer.code = function({ text, lang }) {
   const language = (lang || '').toLowerCase();
   const escaped = escapeHtml(text);
+  const highlighted = language === 'json' ? highlightJSON(escaped) : escaped;
 
   // Render HTML blocks in a sandboxed iframe
   if (language === 'html' || language === 'htm') {
@@ -801,10 +880,10 @@ markedRenderer.code = function({ text, lang }) {
 
   return `<div class="code-block">
     <div class="code-block-header">
-      <span>${language}</span>
+      <span>${language || 'text'}</span>
       <button class="code-block-copy" onclick="WebClaw.copyCode(this)">Copy</button>
     </div>
-    <pre><code class="language-${language}">${escaped}</code></pre>
+    <pre><code class="language-${language}">${highlighted}</code></pre>
   </div>`;
 };
 
@@ -836,9 +915,89 @@ function escapeHtml(s) {
   return div.innerHTML;
 }
 
+// Auto-detect and format raw JSON/tool_call content before markdown processing.
+function preprocessJSON(text) {
+  if (!text) return text;
+
+  // 1. Convert <tool_call>...</tool_call> blocks to formatted tool call code blocks
+  text = text.replace(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g, (match, inner) => {
+    const trimInner = inner.trim();
+    try {
+      const parsed = JSON.parse(trimInner);
+      return '\n**Tool Call:** `' + (parsed.name || 'unknown') + '`\n```json\n' + JSON.stringify(parsed, null, 2) + '\n```\n';
+    } catch(e) {
+      return '\n```\n' + trimInner + '\n```\n';
+    }
+  });
+
+  // 2. If entire text is a JSON object/array, wrap in ```json
+  const trimmed = text.trim();
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      return '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
+    } catch(e) { /* not valid JSON, continue */ }
+  }
+
+  // 3. Fix broken JSON inside ```json fences (missing outer braces)
+  text = text.replace(/```json\n([\s\S]*?)\n```/g, (match, inner) => {
+    const t = inner.trim();
+    // Already valid JSON? Pretty-print it.
+    try {
+      const parsed = JSON.parse(t);
+      return '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
+    } catch(e) {}
+    // Try wrapping in {} if it looks like object properties
+    if (t.startsWith('"') && !t.startsWith('[')) {
+      try {
+        const parsed = JSON.parse('{' + t + '}');
+        return '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
+      } catch(e) {}
+    }
+    return match; // leave as-is
+  });
+
+  // 4. Detect standalone JSON objects/arrays in text (not inside fences)
+  text = text.replace(/(^|\n)([ \t]*)(\{[\s\S]*?\n[ \t]*\}|\[[\s\S]*?\n[ \t]*\])/g, (match, before, indent, jsonBlock) => {
+    // Don't process if inside a code fence
+    const idx = text.indexOf(match);
+    const textBefore = text.substring(0, idx);
+    const fenceCount = (textBefore.match(/```/g) || []).length;
+    if (fenceCount % 2 !== 0) return match;
+    try {
+      const parsed = JSON.parse(jsonBlock.trim());
+      return before + '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
+    } catch(e) { return match; }
+  });
+
+  // 5. If entire content looks like bare JSON properties (missing outer braces),
+  //    try wrapping in {} or adding [] to make valid JSON
+  const t2 = text.trim();
+  if (!t2.startsWith('```') && !t2.startsWith('#') && !t2.startsWith('<')) {
+    // Check if it looks like JSON property lines
+    const jsonPropPattern = /^\s*"[^"]+"\s*:/m;
+    if (jsonPropPattern.test(t2)) {
+      // Try wrapping in {}
+      try {
+        const parsed = JSON.parse('{' + t2 + '}');
+        return '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
+      } catch(e) {}
+      // Try adding missing array brackets for capability-like lists
+      const fixed = t2.replace(/("[^"]+"\s*:\s*)(\n\s*"[^"]*",?\n)/g, '$1[$2]');
+      try {
+        const parsed = JSON.parse('{' + fixed + '}');
+        return '```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
+      } catch(e) {}
+    }
+  }
+
+  return text;
+}
+
 function renderMarkdown(text) {
   if (!text) return '';
-  const raw = marked.parse(text);
+  const raw = marked.parse(preprocessJSON(text));
   return DOMPurify.sanitize(raw, {
     ADD_TAGS: ['iframe', 'video', 'audio', 'source', 'picture'],
     ADD_ATTR: ['target', 'sandbox', 'allow', 'allowfullscreen', 'frameborder', 'srcdoc',
@@ -852,8 +1011,44 @@ function renderMarkdown(text) {
 let ansiUp;
 try { ansiUp = new AnsiUp(); ansiUp.use_classes = false; } catch(e) { ansiUp = null; }
 
+// Detect if text looks like a unified diff
+function isDiffContent(text) {
+  if (!text) return false;
+  const lines = text.split('\n');
+  let diffIndicators = 0;
+  for (const line of lines) {
+    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ')) diffIndicators++;
+    if (line.startsWith('@@') && line.includes('@@')) diffIndicators++;
+    if (diffIndicators >= 2) return true;
+  }
+  return false;
+}
+
+// Render unified diff with syntax coloring
+function renderDiff(text) {
+  const lines = escapeHtml(text).split('\n');
+  const html = lines.map(line => {
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ')) {
+      return `<div class="diff-header">${line}</div>`;
+    }
+    if (line.startsWith('@@')) {
+      return `<div class="diff-hunk">${line}</div>`;
+    }
+    if (line.startsWith('+')) {
+      return `<div class="diff-add">${line}</div>`;
+    }
+    if (line.startsWith('-')) {
+      return `<div class="diff-del">${line}</div>`;
+    }
+    return `<div class="diff-ctx">${line}</div>`;
+  }).join('');
+  return `<div class="diff-view">${html}</div>`;
+}
+
 function renderAnsi(text) {
   if (!text) return '';
+  // Check for diff content first
+  if (isDiffContent(text)) return renderDiff(text);
   if (ansiUp) return ansiUp.ansi_to_html(text);
   return escapeHtml(text);
 }
@@ -985,7 +1180,7 @@ function showAboutPopup(force) {
         <li><kbd>Ctrl+W</kbd> — Close current tab</li>
         <li><kbd>Ctrl+1-9</kbd> — Switch between tabs</li>
         <li><kbd>Ctrl+Enter</kbd> — Send message</li>
-        <li>Sessions auto-terminate after 30 minutes of inactivity</li>
+        <li>Sessions auto-terminate after inactivity (configurable in ⚙️ Settings)</li>
       </ul>
 
       <div class="about-footer">
@@ -1008,6 +1203,67 @@ function showAboutPopup(force) {
       overlay.remove();
     }
   });
+}
+
+// ===== Settings =====
+function getSettings() {
+  const defaults = {
+    idleTimeoutHours: 72,
+    emailOnIdleKill: true,
+  };
+  try {
+    const stored = localStorage.getItem('webclaw_settings');
+    if (stored) return { ...defaults, ...JSON.parse(stored) };
+  } catch(e) {}
+  return defaults;
+}
+
+function saveSettings(settings) {
+  localStorage.setItem('webclaw_settings', JSON.stringify(settings));
+}
+
+function showSettingsPopup() {
+  const settings = getSettings();
+  const overlay = document.createElement('div');
+  overlay.className = 'settings-overlay';
+  overlay.innerHTML = `
+    <div class="settings-card">
+      <h3>⚙️ Settings</h3>
+
+      <div class="settings-group">
+        <label>Session Idle Timeout</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="number" id="settings-timeout" value="${settings.idleTimeoutHours}" min="0.1" max="168" step="0.5" />
+          <span style="font-size:13px;color:var(--text-secondary)">hours</span>
+        </div>
+        <div class="settings-hint">Sessions are automatically terminated after this duration of inactivity. Range: 5 min (0.1h) to 7 days (168h). Default: 72h.</div>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-toggle">
+          <input type="checkbox" id="settings-email-kill" ${settings.emailOnIdleKill ? 'checked' : ''} />
+          <span>Email session transcript when idle-killed</span>
+        </label>
+        <div class="settings-hint">When enabled, the full conversation will be emailed to your configured address before the session is terminated.</div>
+      </div>
+
+      <div class="settings-actions">
+        <button class="btn-settings-cancel" data-action="cancel">Cancel</button>
+        <button class="btn-settings-save" data-action="save">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('[data-action="cancel"]').onclick = () => overlay.remove();
+  overlay.querySelector('[data-action="save"]').onclick = () => {
+    const hours = parseFloat(document.getElementById('settings-timeout').value) || 72;
+    const emailKill = document.getElementById('settings-email-kill').checked;
+    saveSettings({ idleTimeoutHours: Math.max(0.1, Math.min(168, hours)), emailOnIdleKill: emailKill });
+    showToast('success', 'Settings Saved', 'Settings will apply to newly created sessions.');
+    overlay.remove();
+  };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 }
 
 // ===== Fetch User Info from exe.dev proxy headers =====
@@ -1563,6 +1819,9 @@ async function launchSession(id) {
         temperature: session.temperature,
         maxTokens: session.maxTokens,
         systemPrompt: session.systemPrompt,
+        idleTimeoutMin: Math.round((getSettings().idleTimeoutHours || 72) * 60),
+        emailOnIdleKill: getSettings().emailOnIdleKill,
+        emailOnIdleKillTo: state.userEmail || '',
       }),
     });
 
@@ -1729,14 +1988,38 @@ function connectSSE(id) {
   });
 }
 
+const _agentWorkingAnimations = new Map(); // id -> intervalId
 function setAgentWorking(id, working) {
   const ind = document.getElementById('agent-ind-' + id);
+  if (!ind) return;
 
-  if (ind) {
-    if (working) {
-      ind.classList.add('visible');
-    } else {
-      ind.classList.remove('visible');
+  if (working) {
+    ind.classList.add('visible');
+    if (!_agentWorkingAnimations.has(id)) {
+      const textEl = ind.querySelector('.agent-text');
+      if (textEl) {
+        const text = 'Agent working...';
+        let boldIdx = 0;
+        // Initial render with spans
+        textEl.innerHTML = '🦡 ' + text.split('').map((ch, i) =>
+          `<span${i === 0 ? ' class="bold-letter"' : ''}>${ch === ' ' ? '&nbsp;' : escapeHtml(ch)}</span>`
+        ).join('');
+        const interval = setInterval(() => {
+          const spans = textEl.querySelectorAll('span');
+          if (spans.length === 0) return;
+          spans.forEach(s => s.classList.remove('bold-letter'));
+          boldIdx = (boldIdx + 1) % spans.length;
+          spans[boldIdx].classList.add('bold-letter');
+        }, 100);
+        _agentWorkingAnimations.set(id, interval);
+      }
+    }
+  } else {
+    ind.classList.remove('visible');
+    const interval = _agentWorkingAnimations.get(id);
+    if (interval) {
+      clearInterval(interval);
+      _agentWorkingAnimations.delete(id);
     }
   }
 }
@@ -2308,6 +2591,7 @@ function showSystemInfoPopup() {
 // ===== Init =====
 document.getElementById('btn-new-tab').addEventListener('click', addSession);
 document.getElementById('btn-empty-new').addEventListener('click', addSession);
+document.getElementById('btn-settings').addEventListener('click', showSettingsPopup);
 document.getElementById('btn-theme-toggle').addEventListener('click', toggleTheme);
 document.getElementById('btn-email-all').addEventListener('click', emailAllSessions);
 document.getElementById('btn-about').addEventListener('click', () => showAboutPopup(true));

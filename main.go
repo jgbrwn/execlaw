@@ -34,9 +34,9 @@ const (
 	vmKernelPath     = "./vm-assets/vmlinux"
 	vmBaseRootfsPath = "./vm-assets/rootfs.ext4"
 
-	maxSessions       = 10
-	sessionTimeoutMin = 30
-	listenAddr        = ":8000"
+	maxSessions              = 10
+	defaultSessionTimeoutMin = 4320 // 72 hours
+	listenAddr               = ":8000"
 
 	vcpuCount  = 2
 	memSizeMiB = 1024
@@ -66,13 +66,16 @@ const (
 
 // CreateSessionRequest is the JSON body for POST /api/sessions.
 type CreateSessionRequest struct {
-	Provider     string  `json:"provider"`
-	APIKey       string  `json:"apiKey"`
-	Model        string  `json:"model"`
-	Name         string  `json:"name"`
-	Temperature  float64 `json:"temperature"`
-	MaxTokens    int     `json:"maxTokens"`
-	SystemPrompt string  `json:"systemPrompt"`
+	Provider          string  `json:"provider"`
+	APIKey            string  `json:"apiKey"`
+	Model             string  `json:"model"`
+	Name              string  `json:"name"`
+	Temperature       float64 `json:"temperature"`
+	MaxTokens         int     `json:"maxTokens"`
+	SystemPrompt      string  `json:"systemPrompt"`
+	IdleTimeoutMin    int     `json:"idleTimeoutMin,omitempty"`
+	EmailOnIdleKill   bool    `json:"emailOnIdleKill,omitempty"`
+	EmailOnIdleKillTo string  `json:"emailOnIdleKillTo,omitempty"`
 }
 
 // InputRequest is the JSON body for POST /api/sessions/:id/input.
@@ -141,6 +144,11 @@ type Session struct {
 	idleTimerMu sync.Mutex
 	idleTimer   *time.Timer
 	agentBusy   bool
+
+	// Per-session idle timeout (minutes). 0 = use default.
+	IdleTimeoutMin   int  `json:"idleTimeoutMin,omitempty"`
+	EmailOnIdleKill  bool `json:"emailOnIdleKill,omitempty"`
+	EmailOnIdleKillTo string `json:"emailOnIdleKillTo,omitempty"`
 }
 
 // OutputParser is a simple state machine for parsing nullclaw serial output.
@@ -164,6 +172,7 @@ const (
 	psThinking
 	psToolCall
 	psToolOutput
+	psXMLToolCall // inside <tool_call>...</tool_call>
 )
 
 // Event data structures for SSE.
@@ -244,6 +253,10 @@ var (
 	// Tool block delimiters used by nullclaw
 	toolBlockStartRegex = regexp.MustCompile(`^[┌╭]─+`)
 	toolBlockEndRegex   = regexp.MustCompile(`^[└╰]─+`)
+
+	// <tool_call> XML tag pattern (used by some models like Arcee Trinity)
+	xmlToolCallStartRegex = regexp.MustCompile(`(?i)^\s*<tool_call>\s*$`)
+	xmlToolCallEndRegex   = regexp.MustCompile(`(?i)^\s*</tool_call>\s*$`)
 )
 
 // ---------------------------------------------------------------------------
@@ -1075,10 +1088,28 @@ func (p *OutputParser) parseLine(sess *Session, rawLine string) {
 		p.parseToolCall(sess, trimmed, line)
 	case psToolOutput:
 		p.parseToolOutput(sess, trimmed, line)
+	case psXMLToolCall:
+		p.parseXMLToolCall(sess, trimmed)
 	}
 }
 
 func (p *OutputParser) parseNormal(sess *Session, trimmed, line string) {
+	// Check for <tool_call> XML tags.
+	if xmlToolCallStartRegex.MatchString(trimmed) {
+		p.flushTextBuf()
+		p.state = psXMLToolCall
+		p.toolOutput.Reset()
+		return
+	}
+
+	// Check for inline <tool_call>JSON</tool_call> on a single line.
+	if strings.HasPrefix(trimmed, "<tool_call>") && strings.HasSuffix(trimmed, "</tool_call>") {
+		p.flushTextBuf()
+		jsonStr := strings.TrimSuffix(strings.TrimPrefix(trimmed, "<tool_call>"), "</tool_call>")
+		p.emitXMLToolCall(sess, strings.TrimSpace(jsonStr))
+		return
+	}
+
 	// Check for thinking start.
 	if thinkStartRegex.MatchString(trimmed) {
 		p.flushTextBuf() // flush before state change
@@ -1213,6 +1244,54 @@ func (p *OutputParser) parseToolOutput(sess *Session, trimmed, line string) {
 	p.toolOutput.WriteByte('\n')
 }
 
+func (p *OutputParser) parseXMLToolCall(sess *Session, trimmed string) {
+	// Check for </tool_call> end tag.
+	if xmlToolCallEndRegex.MatchString(trimmed) {
+		p.emitXMLToolCall(sess, p.toolOutput.String())
+		p.toolOutput.Reset()
+		p.state = psNormal
+		return
+	}
+	p.toolOutput.WriteString(trimmed)
+	p.toolOutput.WriteByte('\n')
+}
+
+func (p *OutputParser) emitXMLToolCall(sess *Session, jsonStr string) {
+	p.toolIDSeq++
+	toolID := fmt.Sprintf("tc_%d", p.toolIDSeq)
+
+	// Try to parse as JSON to extract tool name and arguments.
+	var toolData map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &toolData); err == nil {
+		name, _ := toolData["name"].(string)
+		if name == "" {
+			name = "tool"
+		}
+		p.currentTool = &ToolCallEvent{
+			ID:     toolID,
+			Name:   name,
+			Input:  toolData["arguments"],
+			Status: "completed",
+		}
+		sess.broadcastSSE(SSEEvent{Event: "tool_call", Data: p.currentTool})
+
+		// Since this model doesn't actually execute tools, emit a note as tool result.
+		sess.broadcastSSE(SSEEvent{Event: "tool_result", Data: ToolResultEvent{
+			ID:     toolID,
+			Output: "(Model described tool call but did not execute it)",
+			Status: "completed",
+		}})
+		p.currentTool = nil
+	} else {
+		// Couldn't parse JSON - emit as a generic message.
+		sess.broadcastSSE(SSEEvent{Event: "message", Data: MessageEvent{
+			Role:    "assistant",
+			Content: "```\n" + jsonStr + "\n```",
+			Type:    "text",
+		}})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SSE Broadcasting
 // ---------------------------------------------------------------------------
@@ -1345,11 +1424,24 @@ func (s *Server) monitorSessions(ctx context.Context) {
 				sess.mu.Lock()
 				last := sess.LastActivity
 				state := sess.State
+				timeoutMin := sess.IdleTimeoutMin
+				emailOnKill := sess.EmailOnIdleKill
+				emailTo := sess.EmailOnIdleKillTo
 				sess.mu.Unlock()
 
+				if timeoutMin <= 0 {
+					timeoutMin = defaultSessionTimeoutMin
+				}
+
 				if state != StateStopped && state != StateStopping && state != StateError {
-					if now.Sub(last) > time.Duration(sessionTimeoutMin)*time.Minute {
-						log.Printf("Session %s: timed out after %d minutes of inactivity", sess.ID, sessionTimeoutMin)
+					if now.Sub(last) > time.Duration(timeoutMin)*time.Minute {
+						log.Printf("Session %s: timed out after %d minutes of inactivity", sess.ID, timeoutMin)
+
+						// Email the conversation before killing if enabled.
+						if emailOnKill && emailTo != "" {
+							go s.sendIdleKillEmail(sess, emailTo)
+						}
+
 						sess.broadcastSSE(SSEEvent{Event: "exit", Data: ExitEvent{Code: 0, Reason: "Session timed out due to inactivity"}})
 						go s.cleanupSession(sess)
 					}
@@ -1619,15 +1711,30 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
+	idleTimeout := req.IdleTimeoutMin
+	if idleTimeout <= 0 {
+		idleTimeout = defaultSessionTimeoutMin
+	}
+	// Clamp to 5 min .. 10080 min (7 days)
+	if idleTimeout < 5 {
+		idleTimeout = 5
+	}
+	if idleTimeout > 10080 {
+		idleTimeout = 10080
+	}
+
 	sess := &Session{
-		ID:           sessionID,
-		Name:         req.Name,
-		Provider:     req.Provider,
-		Model:        req.Model,
-		State:        StateCreating,
-		CreatedAt:    now,
-		LastActivity: now,
-		clients: make(map[*SSEClient]struct{}),
+		ID:                sessionID,
+		Name:              req.Name,
+		Provider:          req.Provider,
+		Model:             req.Model,
+		State:             StateCreating,
+		CreatedAt:         now,
+		LastActivity:      now,
+		clients:           make(map[*SSEClient]struct{}),
+		IdleTimeoutMin:    idleTimeout,
+		EmailOnIdleKill:   req.EmailOnIdleKill,
+		EmailOnIdleKillTo: req.EmailOnIdleKillTo,
 	}
 	sess.parser = newOutputParser(sess)
 
@@ -1715,6 +1822,16 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		Uptime: int64(time.Since(sess.CreatedAt).Seconds()),
 	}}
 	writeSSEEvent(w, initialEvent)
+
+	// Send initial agent busy/idle state.
+	sess.idleTimerMu.Lock()
+	busy := sess.agentBusy
+	sess.idleTimerMu.Unlock()
+	if busy {
+		writeSSEEvent(w, SSEEvent{Event: "agent_busy", Data: map[string]bool{"busy": true}})
+	} else {
+		writeSSEEvent(w, SSEEvent{Event: "agent_idle", Data: map[string]bool{"idle": true}})
+	}
 	flusher.Flush()
 
 	// Stream events.
@@ -1856,6 +1973,50 @@ func (s *Server) handleSessionEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// sendIdleKillEmail sends the session conversation via email when idle-killed.
+func (s *Server) sendIdleKillEmail(sess *Session, to string) {
+	log.Printf("Session %s: sending idle-kill email to %s", sess.ID, to)
+
+	sess.outputMu.Lock()
+	conversation := sess.outputBuf.String()
+	sess.outputMu.Unlock()
+
+	if conversation == "" {
+		log.Printf("Session %s: no conversation to email", sess.ID)
+		return
+	}
+
+	emailBody := map[string]interface{}{
+		"to":      to,
+		"subject": fmt.Sprintf("WebClaw Session (idle-killed): %s", sess.Name),
+		"body":    fmt.Sprintf("This session was automatically terminated after inactivity.\n\nSession: %s\nModel: %s\nCreated: %s\n\n---\n\n%s", sess.Name, sess.Model, sess.CreatedAt.Format(time.RFC3339), conversation),
+	}
+
+	emailData, _ := json.Marshal(emailBody)
+	emailReq, err := http.NewRequest("POST", "http://169.254.169.254/gateway/email/send", bytes.NewReader(emailData))
+	if err != nil {
+		log.Printf("Session %s: failed to create idle-kill email request: %v", sess.ID, err)
+		return
+	}
+	emailReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(emailReq)
+	if err != nil {
+		log.Printf("Session %s: idle-kill email send failed: %v", sess.ID, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("Session %s: idle-kill email API error %d: %s", sess.ID, resp.StatusCode, body)
+		return
+	}
+
+	log.Printf("Session %s: idle-kill email sent to %s", sess.ID, to)
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
