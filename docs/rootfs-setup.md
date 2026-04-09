@@ -7,20 +7,23 @@ ExeClaw requires two VM assets in `vm-assets/`:
 
 These are not included in the repository due to size. Follow these exact steps to build them.
 
+> **Note**: These are the exact commands used to build the rootfs that ships with ExeClaw.
+> They were refined through several iterations of debugging outbound connectivity from
+> inside Firecracker VMs (DNS resolution, CA certificates, kernel `ip=` networking).
+
 ## Prerequisites
 
 ```bash
 sudo apt-get install -y wget curl e2fsprogs squashfs-tools
 ```
 
-## Step 1: Download Firecracker Kernel and Base Rootfs
+## Step 1: Download Firecracker Kernel and Base Ubuntu Rootfs
 
-We use the official Firecracker CI kernel and Ubuntu rootfs as the base.
+We use the official Firecracker CI kernel and Ubuntu 24.04 rootfs from Amazon S3.
 
 ```bash
 mkdir -p vm-assets && cd vm-assets
 
-# Determine latest Firecracker CI version
 ARCH="$(uname -m)"
 release_url="https://github.com/firecracker-microvm/firecracker/releases"
 latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
@@ -33,52 +36,60 @@ latest_kernel_key=$(curl -s "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firec
 wget -O vmlinux "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}"
 chmod +x vmlinux
 
-# Download the Ubuntu squashfs
+# Download the Ubuntu 24.04 squashfs
 latest_ubuntu_key=$(curl -s "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2" \
     | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/ubuntu-[0-9]+\.[0-9]+\.squashfs)(?=</Key>)" \
     | sort -V | tail -1)
-wget -O ubuntu-base.squashfs "https://s3.amazonaws.com/spec.ccfc.min/$latest_ubuntu_key"
+wget -O ubuntu-24.04.squashfs "https://s3.amazonaws.com/spec.ccfc.min/$latest_ubuntu_key"
 ```
 
-## Step 2: Convert Squashfs to ext4
+## Step 2: Extract Squashfs and Customize
+
+Extract the base image, then install nullclaw and configure networking:
 
 ```bash
-# Extract the squashfs
-sudo unsquashfs ubuntu-base.squashfs
-
-# Create a 2GB ext4 image from the extracted contents
-sudo chown -R root:root squashfs-root
-truncate -s 2G rootfs.ext4
-sudo mkfs.ext4 -d squashfs-root -F rootfs.ext4
-
-# Clean up
-sudo rm -rf squashfs-root ubuntu-base.squashfs
+# Extract the squashfs image
+sudo unsquashfs -d /tmp/squashfs-root ubuntu-24.04.squashfs
 ```
 
-## Step 3: Install nullclaw into the Rootfs
+## Step 3: Install nullclaw
 
-Mount the rootfs and install the nullclaw binary:
+nullclaw is a statically linked binary — no runtime dependencies required.
 
 ```bash
-sudo mkdir -p /mnt/rootfs
-sudo mount rootfs.ext4 /mnt/rootfs
-
-# Download nullclaw (statically linked, no dependencies)
-NCLAW_VERSION=$(curl -s https://api.github.com/repos/nullclaw/nullclaw/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+') 
-wget -O /tmp/nullclaw "https://github.com/nullclaw/nullclaw/releases/download/${NCLAW_VERSION}/nullclaw-linux-x86_64.bin"
+# Download the latest nullclaw release
+NCLAW_VERSION=$(curl -s https://api.github.com/repos/nullclaw/nullclaw/releases/latest \
+    | grep -oP '"tag_name":\s*"\K[^"]+') 
+wget -O /tmp/nullclaw \
+    "https://github.com/nullclaw/nullclaw/releases/download/${NCLAW_VERSION}/nullclaw-linux-x86_64.bin"
 chmod +x /tmp/nullclaw
-sudo cp /tmp/nullclaw /mnt/rootfs/usr/local/bin/nullclaw
+
+# Install into the rootfs
+sudo cp /tmp/nullclaw /tmp/squashfs-root/usr/local/bin/nullclaw
+sudo chmod +x /tmp/squashfs-root/usr/local/bin/nullclaw
 ```
 
-## Step 4: Configure Auto-Login on Serial Console
+## Step 4: Install CA Certificates
 
-The VM boots to a serial console. We need root auto-login so ExeClaw can
-send commands immediately after boot.
+**Critical**: The base Firecracker CI rootfs does NOT include CA certificates.
+Without these, nullclaw cannot make HTTPS requests to any LLM API (OpenRouter,
+Anthropic, OpenAI). This was the cause of `error.CurlFailed` errors during
+initial development.
 
 ```bash
-# Create the getty override for auto-login on ttyS0
-sudo mkdir -p /mnt/rootfs/etc/systemd/system/serial-getty@ttyS0.service.d
-sudo tee /mnt/rootfs/etc/systemd/system/serial-getty@ttyS0.service.d/override.conf > /dev/null << 'EOF'
+# Copy CA certificates from the host into the rootfs
+sudo mkdir -p /tmp/squashfs-root/etc/ssl/certs
+sudo cp /etc/ssl/certs/ca-certificates.crt /tmp/squashfs-root/etc/ssl/certs/
+```
+
+## Step 5: Configure Serial Console Auto-Login
+
+ExeClaw communicates with VMs over the Firecracker serial console.
+The VM must auto-login as root so the backend can immediately start nullclaw.
+
+```bash
+sudo mkdir -p /tmp/squashfs-root/etc/systemd/system/serial-getty@ttyS0.service.d
+sudo tee /tmp/squashfs-root/etc/systemd/system/serial-getty@ttyS0.service.d/override.conf > /dev/null << 'EOF'
 [Service]
 # systemd requires this empty ExecStart line to override
 ExecStart=
@@ -86,17 +97,32 @@ ExecStart=-/sbin/agetty --autologin root -o '-p -- \u' --keep-baud 115200,38400,
 EOF
 ```
 
-## Step 5: Configure Networking
+## Step 6: Configure DNS
 
-ExeClaw uses the kernel `ip=` boot parameter for primary network setup, but
-we also install an rc.local fallback that reads custom `fc_ip`/`fc_gw`/`fc_dns`
-kernel cmdline parameters:
+ExeClaw uses the kernel `ip=` boot parameter for network interface setup
+(this is faster and more reliable than userspace configuration). However,
+the kernel `ip=` parameter does NOT configure DNS. We bake `resolv.conf`
+directly into the rootfs.
+
+**Background**: During development, we went through several iterations:
+1. First tried `rc.local` with custom `fc_ip`/`fc_gw`/`fc_dns` kernel params — unreliable
+2. Then tried the Firecracker CI `fcnet-setup.sh` — doesn't work because it expects MAC prefix `06:00:` but ExeClaw uses `02:FC:`
+3. Final solution: kernel `ip=` for interface + static `resolv.conf` for DNS
 
 ```bash
-# Create rc.local for network configuration
-sudo tee /mnt/rootfs/etc/rc.local > /dev/null << 'RCEOF'
+# Set DNS resolvers
+sudo tee /tmp/squashfs-root/etc/resolv.conf > /dev/null << 'EOF'
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+EOF
+```
+
+We also keep a minimal `rc.local` as a fallback networking mechanism and for setting the hostname:
+
+```bash
+sudo tee /tmp/squashfs-root/etc/rc.local > /dev/null << 'RCEOF'
 #!/bin/bash
-# Auto-configure network from kernel cmdline params
+# Fallback: auto-configure network from kernel cmdline params
 FC_IP=$(cat /proc/cmdline | grep -oP "fc_ip=\K[^ ]+")
 FC_GW=$(cat /proc/cmdline | grep -oP "fc_gw=\K[^ ]+")
 FC_DNS=$(cat /proc/cmdline | grep -oP "fc_dns=\K[^ ]+")
@@ -114,10 +140,10 @@ if [ -n "$FC_IP" ] && [ -n "$FC_GW" ]; then
 fi
 hostname nullclaw-sandbox
 RCEOF
-sudo chmod +x /mnt/rootfs/etc/rc.local
+sudo chmod +x /tmp/squashfs-root/etc/rc.local
 
 # Create systemd service for rc.local
-sudo tee /mnt/rootfs/etc/systemd/system/rc-local.service > /dev/null << 'EOF'
+sudo tee /tmp/squashfs-root/etc/systemd/system/rc-local.service > /dev/null << 'EOF'
 [Unit]
 Description=rc.local
 After=network-pre.target
@@ -131,57 +157,72 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-# Enable the rc-local service
+# Enable rc-local service
 sudo ln -sf /etc/systemd/system/rc-local.service \
-    /mnt/rootfs/etc/systemd/system/multi-user.target.wants/rc-local.service
+    /tmp/squashfs-root/etc/systemd/system/multi-user.target.wants/rc-local.service
 ```
 
-## Step 6: Set DNS defaults
+## Step 7: Build the ext4 Image
 
 ```bash
-sudo tee /mnt/rootfs/etc/resolv.conf > /dev/null << 'EOF'
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-EOF
+# Set ownership and create the 2GB ext4 image
+cd vm-assets  # make sure you're in the vm-assets directory
+sudo chown -R root:root /tmp/squashfs-root
+truncate -s 2G rootfs.ext4
+sudo mkfs.ext4 -d /tmp/squashfs-root -F rootfs.ext4
+
+# Clean up
+sudo rm -rf /tmp/squashfs-root
 ```
 
-## Step 7: Unmount and Verify
+## Step 8: Verify
 
 ```bash
-sudo umount /mnt/rootfs
-
-# Verify the image is valid
 e2fsck -fn rootfs.ext4
 echo "Kernel: $(file vmlinux | cut -d: -f2)"
 echo "Rootfs: $(du -h rootfs.ext4 | cut -f1)"
+
+# Quick verification that key files are present
+debugfs -R 'stat /usr/local/bin/nullclaw' rootfs.ext4 2>/dev/null | head -3
+debugfs -R 'stat /etc/ssl/certs/ca-certificates.crt' rootfs.ext4 2>/dev/null | head -3
+debugfs -R 'cat /etc/resolv.conf' rootfs.ext4 2>/dev/null
 ```
 
 ## Final Layout
 
 ```
 vm-assets/
-├── vmlinux       # ~39MB, Linux 6.1.x kernel
-└── rootfs.ext4   # 2GB ext4, Ubuntu 24.04 + nullclaw
+├── vmlinux              # ~39MB, Linux 6.1.x kernel (from Firecracker CI)
+├── rootfs.ext4          # 2GB ext4, Ubuntu 24.04 + nullclaw + CA certs
+└── ubuntu-24.04.squashfs # (optional) keep for rebuilds
 ```
 
-## How ExeClaw Uses the Rootfs
+## How ExeClaw Uses the Rootfs at Runtime
 
-At runtime, ExeClaw does **not** modify the base rootfs. For each session it:
+ExeClaw does **not** modify the base rootfs. For each session it:
 
-1. Creates a copy-on-write clone: `cp --reflink=auto vm-assets/rootfs.ext4 /tmp/execlaw-SESSION.ext4`
-2. Uses `debugfs` to write the nullclaw config (API key, model, provider) into `/root/.nullclaw/config.json` on the clone
-3. Boots Firecracker with the cloned rootfs
-4. After boot, sends `root` login via serial console, then runs `nullclaw agent`
-5. On session cleanup, deletes the clone
+1. **Copy-on-write clone**: `cp --reflink=auto vm-assets/rootfs.ext4 /tmp/execlaw-SESSION.ext4`
+2. **Inject config via debugfs**: Writes the nullclaw config (API key, model, provider) into `/root/.nullclaw/config.json` on the clone
+3. **Boot Firecracker** with the cloned rootfs and kernel boot args:
+   ```
+   console=ttyS0 reboot=k panic=1 pci=off ip=GUEST_IP::GATEWAY:255.255.255.252:nullclaw:eth0:off
+   ```
+   The `ip=` parameter configures the network interface at kernel level (before systemd starts)
+4. **Auto-login** — The serial console auto-logs in as root (via the agetty override)
+5. **Start nullclaw** — The backend sends `nullclaw agent\n` over the serial console
+6. **Cleanup** — On session end, the clone is deleted
 
-This means the base rootfs is never modified and can be shared across all sessions.
+## Troubleshooting
 
-## Kernel Boot Parameters
+### `error.CurlFailed` from nullclaw
+- **Missing CA certs**: Verify `/etc/ssl/certs/ca-certificates.crt` exists in the rootfs
+- **No DNS**: Verify `/etc/resolv.conf` has nameservers in the rootfs
+- **No network**: Check that the host has IP forwarding enabled (`sysctl net.ipv4.ip_forward=1`) and iptables MASQUERADE rule for the `10.200.0.0/16` range
 
-ExeClaw passes these boot args to the VM:
+### VM boots but no network
+- Firecracker uses `virtio-mmio` (not PCI), so `pci=off` is correct
+- The `virtio_net` driver must be built into the kernel (it is in the Firecracker CI kernel)
+- Check that the TAP device is created and has an IP on the host side
 
-```
-console=ttyS0 reboot=k panic=1 pci=off ip=GUEST_IP::GATEWAY:255.255.255.252:nullclaw:eth0:off
-```
-
-The `ip=` parameter configures networking at the kernel level before userspace starts, which is faster and more reliable than the rc.local fallback.
+### `fcnet-setup.sh` doesn't work
+- This is expected. The Firecracker CI rootfs ships with `fcnet-setup.sh` which parses MAC addresses with prefix `06:00:`. ExeClaw uses MAC prefix `02:FC:` so this script is ignored. Networking is handled by the kernel `ip=` boot parameter instead.
