@@ -2,7 +2,7 @@
 
 **Ephemeral AI agent sessions in secure Firecracker microVMs.**
 
-ExeClaw is a web application that launches isolated [nullclaw](https://github.com/boldcompany/nullclaw) AI coding agent sessions inside [Firecracker](https://firecracker-microvm.github.io/) micro-virtual-machines. Each session gets its own sandboxed Linux VM with full network access. Built to run on [exe.dev](https://exe.dev).
+ExeClaw is a web application that launches isolated [nullclaw](https://github.com/nullclaw/nullclaw) AI coding agent sessions inside [Firecracker](https://firecracker-microvm.github.io/) micro-virtual-machines. Each session gets its own sandboxed Linux VM with full network access. Built to run on [exe.dev](https://exe.dev).
 
 ![ExeClaw About](docs/screenshots/about-popup.png)
 
