@@ -131,6 +131,10 @@ type Session struct {
 
 	// Serial console parser state
 	parser *OutputParser
+
+	// Last user input for echo filtering
+	lastInputMu sync.Mutex
+	lastInput   string
 }
 
 // OutputParser is a simple state machine for parsing nullclaw serial output.
@@ -142,6 +146,9 @@ type OutputParser struct {
 	textBuf      strings.Builder
 	toolIDSeq    int64
 	agentStarted bool
+	flushTimer   *time.Timer
+	flushMu      sync.Mutex
+	sess         *Session // back-reference for flushing
 }
 
 type parserState int
@@ -871,8 +878,45 @@ func (sess *Session) writeSerial(data string) {
 // Output Parser
 // ---------------------------------------------------------------------------
 
-func newOutputParser() *OutputParser {
-	return &OutputParser{state: psNormal}
+func newOutputParser(sess *Session) *OutputParser {
+	return &OutputParser{state: psNormal, sess: sess}
+}
+
+// flushTextBuf sends accumulated text as a single message and resets the buffer.
+func (p *OutputParser) flushTextBuf() {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
+
+	text := strings.TrimSpace(p.textBuf.String())
+	p.textBuf.Reset()
+	if p.flushTimer != nil {
+		p.flushTimer.Stop()
+		p.flushTimer = nil
+	}
+
+	if text == "" {
+		return
+	}
+
+	p.sess.broadcastSSE(SSEEvent{Event: "message", Data: MessageEvent{
+		Role:    "assistant",
+		Content: text,
+		Type:    "text",
+	}})
+}
+
+// scheduleFlush sets a timer to flush accumulated text after a short delay.
+// This allows consecutive lines to be grouped into a single message.
+func (p *OutputParser) scheduleFlush() {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
+
+	if p.flushTimer != nil {
+		p.flushTimer.Stop()
+	}
+	p.flushTimer = time.AfterFunc(800*time.Millisecond, func() {
+		p.flushTextBuf()
+	})
 }
 
 // isBootNoise checks if a line is kernel/systemd boot output that should be filtered.
@@ -899,6 +943,19 @@ func isBootNoise(s string) bool {
 		"fcnet.service", "rc-local.service",
 		"Serial:", "virtio_blk",
 		"EXT4-fs", "VFS:",
+		// Login/MOTD noise
+		"-bash:", "bash:",
+		"Password:", "Last login:",
+		"not required on a system",
+		"individual files in /usr/share",
+		"applicable law",
+		"ice - Journal", "service -",
+		"GNU/Linux", "legal notice",
+		"usr/share/common-licenses",
+		"This system has been",
+		"To run a command",
+		"run-parts",
+		"Pending", "apparmor",
 	}
 	for _, p := range noisePatterns {
 		if strings.Contains(s, p) {
@@ -907,6 +964,10 @@ func isBootNoise(s string) bool {
 	}
 	// Lines that are just the shell prompt
 	if strings.HasSuffix(s, "# ") || strings.HasSuffix(s, "$ ") {
+		return true
+	}
+	// Very short lines (1-2 chars) before agent starts are usually noise
+	if len(strings.TrimSpace(s)) <= 2 {
 		return true
 	}
 	return false
@@ -923,16 +984,44 @@ func (p *OutputParser) parseLine(sess *Session, rawLine string) {
 
 	// Filter boot noise until nullclaw starts.
 	if !p.agentStarted {
-		if strings.Contains(trimmed, "nullclaw Agent") || strings.Contains(trimmed, "Type your message") {
+		if strings.Contains(trimmed, "Type your message") {
 			p.agentStarted = true
-		} else if isBootNoise(trimmed) {
-			return
+			return // Don't show the prompt line itself
 		}
+		// Everything before "Type your message" is startup noise
+		return
 	}
 
 	// Always filter pure boot noise even after agent starts (can appear in output)
-	if isBootNoise(trimmed) && !strings.Contains(trimmed, "nullclaw") && !strings.Contains(trimmed, "Error") {
+	if isBootNoise(trimmed) && !strings.Contains(trimmed, "Error") {
 		return
+	}
+
+	// Filter echo of user input (nullclaw echoes with "> " prefix, serial may wrap lines).
+	sess.lastInputMu.Lock()
+	lastInput := sess.lastInput
+	sess.lastInputMu.Unlock()
+	if lastInput != "" {
+		normTrimmed := strings.TrimSpace(trimmed)
+		normInput := strings.TrimSpace(lastInput)
+		// Strip "> " prefix that nullclaw adds to echoed input
+		strippedTrimmed := normTrimmed
+		if strings.HasPrefix(strippedTrimmed, "> ") {
+			strippedTrimmed = strings.TrimSpace(strippedTrimmed[2:])
+		}
+		// Exact match (with or without > prefix), or substring of input (wrapped echo)
+		if strippedTrimmed == normInput || normTrimmed == normInput ||
+			(len(strippedTrimmed) > 3 && strings.Contains(normInput, strippedTrimmed)) ||
+			(len(strippedTrimmed) > 3 && strings.HasPrefix(normInput, strippedTrimmed)) {
+			// If we matched the full input or the last chunk, consume the echo
+			if strippedTrimmed == normInput || normTrimmed == normInput ||
+				strings.HasSuffix(normInput, strippedTrimmed) {
+				sess.lastInputMu.Lock()
+				sess.lastInput = "" // consume the echo
+				sess.lastInputMu.Unlock()
+			}
+			return
+		}
 	}
 
 	switch p.state {
@@ -950,6 +1039,7 @@ func (p *OutputParser) parseLine(sess *Session, rawLine string) {
 func (p *OutputParser) parseNormal(sess *Session, trimmed, line string) {
 	// Check for thinking start.
 	if thinkStartRegex.MatchString(trimmed) {
+		p.flushTextBuf() // flush before state change
 		p.state = psThinking
 		p.thinkBuf.Reset()
 		return
@@ -957,6 +1047,7 @@ func (p *OutputParser) parseNormal(sess *Session, trimmed, line string) {
 
 	// Check for tool block start (box-drawing characters).
 	if toolBlockStartRegex.MatchString(trimmed) {
+		p.flushTextBuf()
 		p.state = psToolCall
 		p.toolOutput.Reset()
 		return
@@ -964,6 +1055,7 @@ func (p *OutputParser) parseNormal(sess *Session, trimmed, line string) {
 
 	// Check for explicit tool start pattern.
 	if m := toolStartRegex.FindStringSubmatch(trimmed); m != nil {
+		p.flushTextBuf()
 		p.toolIDSeq++
 		toolID := fmt.Sprintf("tc_%d", p.toolIDSeq)
 		p.currentTool = &ToolCallEvent{
@@ -983,7 +1075,13 @@ func (p *OutputParser) parseNormal(sess *Session, trimmed, line string) {
 		return
 	}
 
-	// Flush any accumulated text.
+	// Skip the "Type your message" prompt line.
+	if strings.Contains(trimmed, "Type your message") {
+		p.flushTextBuf()
+		return
+	}
+
+	// Send text line immediately (frontend will accumulate into single bubble).
 	if len(trimmed) > 0 {
 		sess.broadcastSSE(SSEEvent{Event: "message", Data: MessageEvent{
 			Role:    "assistant",
@@ -1231,6 +1329,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
+	email := r.Header.Get("X-ExeDev-Email")
+	userID := r.Header.Get("X-ExeDev-UserID")
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"email":  email,
+		"userId": userID,
+	})
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	provider := extractPathParam(r.URL.Path, "/api/models/")
 	if provider == "" {
@@ -1312,37 +1419,28 @@ func fetchOpenRouterFreeModels() ([]map[string]interface{}, error) {
 		}
 	}
 
-	// Set Gemma 4 31B as default (user requested "Gemma 31b"), fall back to other Gemma models.
-	foundGemmaDefault := false
-	// Priority order: gemma-4-31b > gemma-3-27b > any gemma > first model
-	priorityPatterns := []struct{ sub1, sub2 string }{
-		{"gemma-4", "31b"},
-		{"gemma-3", "27b"},
+	// Set default: prefer arcee-ai/trinity-large > gemma-4-31b > gemma-3-27b > any gemma > first
+	foundDefault := false
+	priorityPatterns := []string{
+		"arcee-ai/trinity-large",
+		"gemma-4-31b",
+		"gemma-3-27b",
+		"gemma",
 	}
-	for _, p := range priorityPatterns {
-		if foundGemmaDefault {
+	for _, pattern := range priorityPatterns {
+		if foundDefault {
 			break
 		}
 		for i, m := range models {
 			id, _ := m["id"].(string)
-			if strings.Contains(strings.ToLower(id), p.sub1) && strings.Contains(id, p.sub2) {
+			if strings.Contains(strings.ToLower(id), pattern) {
 				models[i]["default"] = true
-				foundGemmaDefault = true
+				foundDefault = true
 				break
 			}
 		}
 	}
-	if !foundGemmaDefault {
-		for i, m := range models {
-			id, _ := m["id"].(string)
-			if strings.Contains(strings.ToLower(id), "gemma") {
-				models[i]["default"] = true
-				foundGemmaDefault = true
-				break
-			}
-		}
-	}
-	if !foundGemmaDefault && len(models) > 0 {
+	if !foundDefault && len(models) > 0 {
 		models[0]["default"] = true
 	}
 
@@ -1400,9 +1498,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		State:        StateCreating,
 		CreatedAt:    now,
 		LastActivity: now,
-		clients:      make(map[*SSEClient]struct{}),
-		parser:       newOutputParser(),
+		clients: make(map[*SSEClient]struct{}),
 	}
+	sess.parser = newOutputParser(sess)
 
 	s.sessions.Store(sessionID, sess)
 
@@ -1549,6 +1647,11 @@ func (s *Server) handleSessionInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Store for echo filtering.
+	sess.lastInputMu.Lock()
+	sess.lastInput = req.Message
+	sess.lastInputMu.Unlock()
+
 	// Write message to serial console.
 	sess.writeSerial(req.Message + "\n")
 
@@ -1661,6 +1764,7 @@ func (s *Server) setupRoutes() http.Handler {
 	// API routes.
 	mux.HandleFunc("/api/health", s.methodGuard("GET", s.handleHealth))
 	mux.HandleFunc("/api/models/", s.methodGuard("GET", s.handleModels))
+	mux.HandleFunc("/api/userinfo", s.methodGuard("GET", s.handleUserInfo))
 
 	// Session routes - we need to handle different methods on the same path prefix.
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {

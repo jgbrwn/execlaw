@@ -457,6 +457,64 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
   background: var(--bg-input); color: var(--text-primary);
 }
 
+/* ===== About / TLDR Popup ===== */
+.about-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 9100;
+  display: flex; align-items: center; justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+.about-card {
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg); padding: 28px 32px; max-width: 560px; width: 90%;
+  box-shadow: var(--shadow); max-height: 85vh; overflow-y: auto;
+}
+.about-card h2 { margin-bottom: 4px; font-size: 20px; }
+.about-card .about-subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 18px; }
+.about-card h4 { margin: 14px 0 6px; font-size: 14px; color: var(--accent); }
+.about-card p, .about-card li { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
+.about-card ul { padding-left: 18px; margin: 4px 0 10px; }
+.about-card li { margin-bottom: 3px; }
+.about-card .tech-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.about-card .tech-badge {
+  font-size: 11px; padding: 3px 10px; border-radius: 12px;
+  background: var(--accent-bg); color: var(--accent); font-family: var(--font-mono);
+}
+.about-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color); }
+.about-footer label { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.about-footer label input { accent-color: var(--accent); }
+
+/* ===== Idle Killed Overlay ===== */
+.idle-killed-overlay {
+  position: absolute; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.5); backdrop-filter: blur(4px);
+}
+.idle-killed-card {
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg); padding: 28px; text-align: center;
+  max-width: 380px; box-shadow: var(--shadow);
+}
+.idle-killed-card .ik-icon { font-size: 48px; margin-bottom: 12px; }
+.idle-killed-card h3 { margin-bottom: 8px; }
+.idle-killed-card p { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+
+/* ===== Message Actions (copy/download) ===== */
+.message-actions {
+  display: flex; gap: 4px; margin-top: 6px; opacity: 0;
+  transition: opacity var(--transition);
+}
+.message:hover .message-actions, .message-actions:focus-within { opacity: 1; }
+.message-action-btn {
+  padding: 2px 8px; border-radius: 4px; font-size: 11px;
+  color: var(--text-muted); border: 1px solid transparent;
+  transition: all var(--transition); display: flex; align-items: center; gap: 3px;
+}
+.message-action-btn:hover { color: var(--accent); border-color: var(--border-color); background: var(--bg-tertiary); }
+.tool-call-actions {
+  display: flex; gap: 4px; padding: 6px 12px; border-top: 1px solid var(--border-subtle);
+}
+.tool-call-actions .message-action-btn { font-size: 11px; }
+
 /* ===== Lightbox ===== */
 .lightbox {
   position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 9500;
@@ -522,6 +580,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
     <div class="topbar-actions">
       <button class="btn-icon" id="btn-email-all" title="Email all sessions">📧</button>
       <button class="btn-icon" id="btn-theme-toggle" title="Toggle theme">🌙</button>
+      <button class="btn-icon" id="btn-about" title="About WebClaw">ℹ️</button>
     </div>
   </header>
 
@@ -559,6 +618,7 @@ const state = {
   tabOrder: [],           // ordered session ids
   sessionCounter: 0,
   theme: 'dark',
+  userEmail: '',          // detected from exe.dev proxy headers
 };
 
 function generateId() {
@@ -638,7 +698,7 @@ const PROVIDER_MODELS = {
 };
 
 const PROVIDER_DEFAULTS = {
-  openrouter: 'google/gemma-4-31b-it:free',
+  openrouter: 'arcee-ai/trinity-large-preview:free',
   anthropic: 'claude-opus-4-20250918',
   openai: 'gpt-5.4',
 };
@@ -739,13 +799,14 @@ function showConfirm(title, message, onConfirm, confirmLabel, confirmClass) {
 }
 
 function showEmailDialog(sessionId) {
+  const defaultEmail = state.userEmail || '';
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal">
       <h3>📧 Email Conversation</h3>
       <p>Send the full conversation log as formatted markdown to an email address.</p>
-      <input type="email" class="email-input" value="jbssfl@gmail.com" placeholder="recipient@example.com" />
+      <input type="email" class="email-input" value="${escapeHtml(defaultEmail)}" placeholder="recipient@example.com" />
       <div class="modal-actions">
         <button class="btn-cancel" data-action="cancel">Cancel</button>
         <button class="btn-primary" data-action="send">Send Email</button>
@@ -782,6 +843,172 @@ function copyCode(btn) {
     btn.textContent = 'Copied!';
     setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
   });
+}
+
+// ===== About / TLDR Popup =====
+function showAboutPopup(force) {
+  // Check if already dismissed and not forced
+  if (!force && localStorage.getItem('webclaw_about_dismissed')) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'about-overlay';
+  overlay.innerHTML = `
+    <div class="about-card">
+      <h2>🦡 Welcome to WebClaw</h2>
+      <p class="about-subtitle">Ephemeral AI agent sessions in secure Firecracker microVMs</p>
+
+      <h4>🚀 What is this?</h4>
+      <p>WebClaw lets you launch AI coding agents (powered by <strong>nullclaw</strong>) inside isolated Firecracker micro-virtual-machines. Each session gets its own Linux VM with full network access, so the AI agent can browse the web, run commands, write code, and more — all sandboxed from the host.</p>
+
+      <h4>🔒 How does it work?</h4>
+      <ul>
+        <li>You provide an API key (OpenRouter, Anthropic, or OpenAI) and pick a model</li>
+        <li>A Firecracker microVM boots in ~3 seconds with a full Ubuntu 24.04 environment</li>
+        <li>The <strong>nullclaw</strong> agent starts inside the VM, connected to your chosen LLM</li>
+        <li>You chat with the agent via SSE streaming — it can use tools, write files, run bash, and more</li>
+        <li>When you close the tab, the VM is destroyed — nothing persists</li>
+      </ul>
+
+      <h4>🛠️ Tech Stack</h4>
+      <div class="tech-badges">
+        <span class="tech-badge">Go (stdlib only)</span>
+        <span class="tech-badge">Firecracker microVMs</span>
+        <span class="tech-badge">Linux KVM</span>
+        <span class="tech-badge">TAP networking</span>
+        <span class="tech-badge">SSE streaming</span>
+        <span class="tech-badge">nullclaw agent</span>
+        <span class="tech-badge">Vanilla JS SPA</span>
+        <span class="tech-badge">exe.dev</span>
+      </div>
+
+      <h4>⚡ Quick Tips</h4>
+      <ul>
+        <li><kbd>Ctrl+T</kbd> — New session tab</li>
+        <li><kbd>Ctrl+W</kbd> — Close current tab</li>
+        <li><kbd>Ctrl+1-9</kbd> — Switch between tabs</li>
+        <li><kbd>Ctrl+Enter</kbd> — Send message</li>
+        <li>Sessions auto-terminate after 30 minutes of inactivity</li>
+      </ul>
+
+      <div class="about-footer">
+        <label><input type="checkbox" id="about-dismiss-check" checked /> Don't show this again</label>
+        <button class="btn-primary" data-action="close-about">Got it!</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('[data-action="close-about"]').onclick = () => {
+    const dismiss = overlay.querySelector('#about-dismiss-check').checked;
+    if (dismiss) localStorage.setItem('webclaw_about_dismissed', '1');
+    overlay.remove();
+  };
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      const dismiss = overlay.querySelector('#about-dismiss-check').checked;
+      if (dismiss) localStorage.setItem('webclaw_about_dismissed', '1');
+      overlay.remove();
+    }
+  });
+}
+
+// ===== Fetch User Info from exe.dev proxy headers =====
+async function fetchUserInfo() {
+  try {
+    const resp = await fetch('/api/userinfo');
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.email) state.userEmail = data.email;
+    }
+  } catch(e) { /* ignore - will just have empty email field */ }
+}
+
+// ===== Idle-Killed Session UI =====
+function showIdleKilledOverlay(id, reason) {
+  const session = state.sessions.get(id);
+  if (!session) return;
+  session.state = 'closed';
+  renderTabBar();
+
+  const active = document.getElementById('active-' + id);
+  if (!active) return;
+
+  // Remove existing overlay if any
+  const existing = active.querySelector('.idle-killed-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'idle-killed-overlay';
+  overlay.innerHTML = `
+    <div class="idle-killed-card">
+      <div class="ik-icon">⏰</div>
+      <h3>Session Expired</h3>
+      <p>${escapeHtml(reason || 'This session was terminated due to inactivity.')}</p>
+      <div class="modal-actions" style="justify-content:center">
+        <button class="btn-primary" data-action="close-idle">Close Tab</button>
+      </div>
+    </div>
+  `;
+  overlay.querySelector('[data-action="close-idle"]').onclick = () => {
+    doCloseSession(id);
+  };
+  active.appendChild(overlay);
+}
+
+// ===== Copy / Download Helpers =====
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    if (btn) {
+      const orig = btn.innerHTML;
+      btn.innerHTML = '✅ Copied';
+      setTimeout(() => { btn.innerHTML = orig; }, 2000);
+    }
+    showToast('success', 'Copied', 'Content copied to clipboard.');
+  }).catch(() => {
+    showToast('error', 'Copy Failed', 'Could not copy to clipboard.');
+  });
+}
+
+function downloadText(text, filename) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'webclaw-output.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function downloadMarkdown(text, filename) {
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'webclaw-output.md';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Get raw text content from a message (strips HTML)
+function getMessageRawText(msgEl) {
+  const bubble = msgEl.querySelector('.message-bubble');
+  if (!bubble) return '';
+  // Try to reconstruct markdown-ish text from code blocks + text
+  let text = '';
+  bubble.childNodes.forEach(node => {
+    if (node.classList && node.classList.contains('code-block')) {
+      const lang = node.querySelector('.code-block-header span')?.textContent || '';
+      const code = node.querySelector('code')?.textContent || '';
+      text += '\n```' + lang + '\n' + code + '\n```\n';
+    } else {
+      text += node.textContent || '';
+    }
+  });
+  return text.trim();
 }
 
 // ===== Theme Toggle =====
@@ -1354,9 +1581,17 @@ function connectSSE(id) {
       es.close();
       session.eventSource = null;
       if (session.uptimeInterval) clearInterval(session.uptimeInterval);
-      updateStatusBar(id, 'disconnected', 'Session ended' + (data.reason ? ': ' + data.reason : ''));
+      const reason = data.reason || '';
+      updateStatusBar(id, 'disconnected', 'Session ended' + (reason ? ': ' + reason : ''));
       renderTabBar();
-      showToast('info', 'Session Ended', `"${session.name}" has ended.`);
+
+      // Check if this was an idle timeout
+      if (reason.toLowerCase().includes('timed out') || reason.toLowerCase().includes('inactivity')) {
+        showIdleKilledOverlay(id, reason);
+        showToast('warning', 'Session Timed Out', `"${session.name}" was terminated due to inactivity.`);
+      } else {
+        showToast('info', 'Session Ended', `"${session.name}" has ended.`);
+      }
     } catch(err) {}
   });
 }
@@ -1373,8 +1608,78 @@ function handleSSEMessage(id, data) {
   const session = state.sessions.get(id);
   if (!session) return;
 
-  session.messages.push(data);
-  appendMessageToChat(id, data);
+  const role = data.role || 'assistant';
+  const content = data.content || '';
+
+  // For assistant messages, accumulate into the current streaming bubble
+  if (role === 'assistant') {
+    // Append to the last raw message or start a new one
+    const lastMsg = session.messages[session.messages.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant' && lastMsg._streaming) {
+      lastMsg.content += '\n' + content;
+    } else {
+      session.messages.push({ role, content, _streaming: true });
+    }
+    updateOrCreateAssistantBubble(id, session);
+  } else {
+    session.messages.push(data);
+    appendMessageToChat(id, data);
+  }
+}
+
+// Mark the current assistant message as complete (called on tool_call, thinking, or prompt)
+function finalizeAssistantBubble(id) {
+  const session = state.sessions.get(id);
+  if (!session) return;
+  const lastMsg = session.messages[session.messages.length - 1];
+  if (lastMsg && lastMsg.role === 'assistant' && lastMsg._streaming) {
+    lastMsg._streaming = false;
+  }
+  // Also clear the current bubble tracker
+  const chat = document.getElementById('chat-' + id);
+  if (chat) delete chat.dataset.currentAssistantBubble;
+}
+
+function updateOrCreateAssistantBubble(id, session) {
+  const chat = document.getElementById('chat-' + id);
+  if (!chat) return;
+
+  const lastMsg = session.messages[session.messages.length - 1];
+  const content = lastMsg.content;
+  const bubbleId = chat.dataset.currentAssistantBubble;
+  let existing = bubbleId ? document.getElementById(bubbleId) : null;
+
+  if (existing) {
+    // Update existing bubble
+    existing.dataset.rawContent = content;
+    const bubble = existing.querySelector('.message-bubble');
+    if (bubble) bubble.innerHTML = renderMarkdown(content);
+    scrollToBottom(chat);
+    return;
+  }
+
+  // Create new bubble
+  const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2,4);
+  chat.dataset.currentAssistantBubble = msgId;
+
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+  div.id = msgId;
+  div.dataset.rawContent = content;
+
+  const bubbleHTML = renderMarkdown(content);
+  div.innerHTML = `
+    <div class="message-avatar">&#x1F99E;</div>
+    <div>
+      <div class="message-bubble">${bubbleHTML}</div>
+      <div class="message-actions">
+        <button class="message-action-btn" onclick="WebClaw.copyMessage(this)" title="Copy text">&#x1F4CB; Copy</button>
+        <button class="message-action-btn" onclick="WebClaw.downloadMessage(this, 'assistant')" title="Download as file">&#x2B07; Download</button>
+      </div>
+    </div>
+  `;
+  chat.appendChild(div);
+  scrollToBottom(chat);
 }
 
 function appendMessageToChat(id, data) {
@@ -1384,15 +1689,25 @@ function appendMessageToChat(id, data) {
   const role = data.role || 'assistant';
   const content = data.content || '';
 
+  // Finalize any streaming assistant bubble before adding user message
+  if (role === 'user') finalizeAssistantBubble(id);
+
   const div = document.createElement('div');
   div.className = 'message ' + role;
+  div.dataset.rawContent = content;
 
   const avatarText = role === 'user' ? 'U' : '🦞';
   const bubbleHTML = role === 'user' ? escapeHtml(content) : renderMarkdown(content);
 
   div.innerHTML = `
     <div class="message-avatar">${avatarText}</div>
-    <div class="message-bubble">${bubbleHTML}</div>
+    <div>
+      <div class="message-bubble">${bubbleHTML}</div>
+      <div class="message-actions">
+        <button class="message-action-btn" onclick="WebClaw.copyMessage(this)" title="Copy text">&#x1F4CB; Copy</button>
+        <button class="message-action-btn" onclick="WebClaw.downloadMessage(this, '${role}')" title="Download as file">&#x2B07; Download</button>
+      </div>
+    </div>
   `;
 
   chat.appendChild(div);
@@ -1402,6 +1717,7 @@ function appendMessageToChat(id, data) {
 function handleSSEToolCall(id, data) {
   const session = state.sessions.get(id);
   if (!session) return;
+  finalizeAssistantBubble(id);
 
   const tcId = data.id || ('tc_' + Date.now());
   session.toolCalls.set(tcId, data);
@@ -1437,6 +1753,10 @@ function handleSSEToolCall(id, data) {
       <div class="tool-call-section" id="tc-output-${tcId}" style="display:none">
         <div class="tool-call-section-label">Output</div>
         <pre id="tc-output-pre-${tcId}"></pre>
+      </div>
+      <div class="tool-call-actions">
+        <button class="message-action-btn" onclick="WebClaw.copyToolCall('${tcId}')" title="Copy tool call">&#x1F4CB; Copy</button>
+        <button class="message-action-btn" onclick="WebClaw.downloadToolCall('${tcId}')" title="Download tool call">&#x2B07; Download</button>
       </div>
     </div>
   `;
@@ -1480,6 +1800,7 @@ function handleSSEToolResult(id, data) {
 }
 
 function handleSSEThinking(id, data) {
+  finalizeAssistantBubble(id);
   const chat = document.getElementById('chat-' + id);
   if (!chat) return;
 
@@ -1699,6 +2020,45 @@ window.WebClaw = {
   copyCode,
   openLightbox,
   toggleToolCall,
+  copyMessage(btn) {
+    const msg = btn.closest('.message');
+    const raw = msg?.dataset?.rawContent;
+    if (raw) { copyText(raw, btn); } else {
+      const text = getMessageRawText(msg);
+      copyText(text, btn);
+    }
+  },
+  downloadMessage(btn, role) {
+    const msg = btn.closest('.message');
+    const raw = msg?.dataset?.rawContent || getMessageRawText(msg);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
+    downloadMarkdown(raw, `webclaw-${role}-${ts}.md`);
+  },
+  copyToolCall(tcId) {
+    const body = document.getElementById('tc-body-' + tcId);
+    if (!body) return;
+    let text = '';
+    body.querySelectorAll('.tool-call-section').forEach(sec => {
+      const label = sec.querySelector('.tool-call-section-label')?.textContent || '';
+      const pre = sec.querySelector('pre')?.textContent || '';
+      if (pre) text += `--- ${label} ---\n${pre}\n\n`;
+    });
+    copyText(text.trim());
+  },
+  downloadToolCall(tcId) {
+    const el = document.getElementById('tc-' + tcId);
+    const name = el?.querySelector('.tool-call-name')?.textContent || 'tool';
+    const body = document.getElementById('tc-body-' + tcId);
+    if (!body) return;
+    let text = `Tool: ${name}\n`;
+    body.querySelectorAll('.tool-call-section').forEach(sec => {
+      const label = sec.querySelector('.tool-call-section-label')?.textContent || '';
+      const pre = sec.querySelector('pre')?.textContent || '';
+      if (pre) text += `\n--- ${label} ---\n${pre}\n`;
+    });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
+    downloadText(text.trim(), `webclaw-${name}-${ts}.txt`);
+  },
 };
 
 // ===== Init =====
@@ -1706,9 +2066,16 @@ document.getElementById('btn-new-tab').addEventListener('click', addSession);
 document.getElementById('btn-empty-new').addEventListener('click', addSession);
 document.getElementById('btn-theme-toggle').addEventListener('click', toggleTheme);
 document.getElementById('btn-email-all').addEventListener('click', emailAllSessions);
+document.getElementById('btn-about').addEventListener('click', () => showAboutPopup(true));
 
 // Load persisted state
 loadState();
+
+// Fetch user info (email from exe.dev proxy headers)
+fetchUserInfo();
+
+// Show about popup on first visit
+showAboutPopup(false);
 
 // Health check
 fetch('/api/health').then(r => r.ok ? r.json() : null).then(data => {
