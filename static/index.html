@@ -993,6 +993,23 @@ function downloadMarkdown(text, filename) {
   URL.revokeObjectURL(url);
 }
 
+// Download full conversation as markdown
+function downloadFullConversation(id) {
+  const session = state.sessions.get(id);
+  if (!session) return;
+  let md = `# WebClaw Conversation: ${session.name}\n`;
+  md += `**Model:** ${session.model}\n`;
+  md += `**Provider:** ${session.provider}\n`;
+  md += `**Date:** ${new Date().toISOString()}\n\n---\n\n`;
+  for (const msg of session.messages) {
+    const role = msg.role === 'user' ? '**You**' : '**Assistant**';
+    md += `### ${role}\n\n${msg.content || ''}\n\n---\n\n`;
+  }
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
+  const safeName = session.name.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+  downloadMarkdown(md, `webclaw-${safeName}-${ts}.md`);
+}
+
 // Get raw text content from a message (strips HTML)
 function getMessageRawText(msgEl) {
   const bubble = msgEl.querySelector('.message-bubble');
@@ -1239,6 +1256,7 @@ function buildActiveHTML(id) {
         <span class="model-badge" id="active-model-${id}"></span>
       </div>
       <div class="session-header-right">
+        <button class="btn-sm" data-action="download-all" title="Download full conversation">&#x2B07; Save</button>
         <button class="btn-sm" data-action="email" title="Email conversation">📧 Email</button>
         <button class="btn-sm" data-action="reconnect" title="Reconnect" style="display:none" id="btn-reconnect-${id}">🔄 Reconnect</button>
       </div>
@@ -1344,6 +1362,11 @@ function bindActiveEvents(id) {
   textarea.addEventListener('input', () => {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+  });
+
+  // Download all
+  active.querySelector('[data-action="download-all"]').addEventListener('click', () => {
+    downloadFullConversation(id);
   });
 
   // Email
