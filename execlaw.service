@@ -1,0 +1,16 @@
+[Unit]
+Description=ExeClaw - AI Agent Sessions in Firecracker microVMs
+After=network.target
+
+[Service]
+Type=simple
+User=exedev
+Group=exedev
+WorkingDirectory=/home/exedev/execlaw
+ExecStart=/home/exedev/execlaw/execlaw
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/exedev
+
+[Install]
+WantedBy=multi-user.target

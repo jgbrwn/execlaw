@@ -1,3 +1,3 @@
-module webclaw
+module execlaw
 
 go 1.26.1

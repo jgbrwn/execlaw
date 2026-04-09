@@ -1,0 +1,26 @@
+ExeClaw
+Copyright (c) 2026 ExeClaw Contributors
+
+This product includes software developed as an open-source project.
+
+ExeClaw uses the following third-party technologies:
+
+- Firecracker (Apache 2.0) — https://github.com/firecracker-microvm/firecracker
+  Lightweight virtual machine monitor for serverless computing.
+
+- nullclaw — AI coding agent that runs inside the Firecracker VMs.
+
+- marked (MIT) — https://github.com/markedjs/marked
+  Markdown parser and compiler.
+
+- DOMPurify (Apache 2.0/MIT) — https://github.com/cure53/DOMPurify
+  XSS sanitizer for HTML.
+
+- ansi_up (MIT) — https://github.com/drudru/ansi_up
+  ANSI escape code to HTML converter.
+
+Inspired by:
+- Shelley (https://github.com/boldsoftware/shelley) — exe.dev's coding agent,
+  whose agent-working indicator pattern and diff rendering approach influenced
+  ExeClaw's UI design.
+- exe.dev (https://exe.dev) — the VM platform that ExeClaw is designed to run on.

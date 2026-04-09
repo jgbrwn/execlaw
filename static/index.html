@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WebClaw - AI Agent Sessions</title>
+<title>ExeClaw - AI Agent Sessions</title>
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ansi_up@6/ansi_up.min.js"></script>
@@ -702,7 +702,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 <div id="app">
   <!-- Top Bar -->
   <header class="topbar">
-    <div class="topbar-brand">🦞 <span>WebClaw</span></div>
+    <div class="topbar-brand">🦞 <span>ExeClaw</span></div>
     <div class="topbar-actions">
       <div class="mem-gauge" id="mem-gauge" title="System Memory">
         <svg viewBox="0 0 36 36">
@@ -716,7 +716,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
       <button class="btn-icon" id="btn-settings" title="Settings">⚙️</button>
       <button class="btn-icon exedev-only" id="btn-email-all" title="Email all sessions">📧</button>
       <button class="btn-icon" id="btn-theme-toggle" title="Toggle theme">🌙</button>
-      <button class="btn-icon" id="btn-about" title="About WebClaw">ℹ️</button>
+      <button class="btn-icon" id="btn-about" title="About ExeClaw">ℹ️</button>
     </div>
   </header>
 
@@ -730,7 +730,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
     <!-- Empty state (no tabs) -->
     <div class="empty-state" id="empty-state">
       <div class="big-emoji">🦞</div>
-      <h3>Welcome to WebClaw</h3>
+      <h3>Welcome to ExeClaw</h3>
       <p>Create a new session to start chatting with an AI agent running in a secure Firecracker microVM.</p>
       <button id="btn-empty-new">+ New Session</button>
     </div>
@@ -742,7 +742,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 
 <script>
 // ============================================================
-// WebClaw SPA — Vanilla JS Application
+// ExeClaw SPA — Vanilla JS Application
 // ============================================================
 (function() {
 'use strict';
@@ -871,8 +871,8 @@ markedRenderer.code = function({ text, lang }) {
     return `<div class="code-block">
       <div class="code-block-header">
         <span>${language}</span>
-        <button class="code-block-copy" onclick="WebClaw.copyCode(this)">Copy</button>
-        <button class="code-block-copy" onclick="WebClaw.toggleHtmlPreview('${iframeId}')">Preview</button>
+        <button class="code-block-copy" onclick="ExeClaw.copyCode(this)">Copy</button>
+        <button class="code-block-copy" onclick="ExeClaw.toggleHtmlPreview('${iframeId}')">Preview</button>
       </div>
       <pre><code class="language-${language}">${escaped}</code></pre>
     </div>
@@ -882,7 +882,7 @@ markedRenderer.code = function({ text, lang }) {
   return `<div class="code-block">
     <div class="code-block-header">
       <span>${language || 'text'}</span>
-      <button class="code-block-copy" onclick="WebClaw.copyCode(this)">Copy</button>
+      <button class="code-block-copy" onclick="ExeClaw.copyCode(this)">Copy</button>
     </div>
     <pre><code class="language-${language}">${highlighted}</code></pre>
   </div>`;
@@ -901,7 +901,7 @@ markedRenderer.image = function({ href, title, text }) {
     return `<audio controls preload="metadata" src="${h}"${t}>${a}</audio>`;
   }
   // Regular images (including webp, gif, svg)
-  return `<img src="${h}" alt="${a}"${t} onclick="WebClaw.openLightbox(this.src)" loading="lazy" />`;
+  return `<img src="${h}" alt="${a}"${t} onclick="ExeClaw.openLightbox(this.src)" loading="lazy" />`;
 };
 
 marked.setOptions({
@@ -1142,17 +1142,17 @@ function copyCode(btn) {
 // ===== About / TLDR Popup =====
 function showAboutPopup(force) {
   // Check if already dismissed and not forced
-  if (!force && localStorage.getItem('webclaw_about_dismissed')) return;
+  if (!force && localStorage.getItem('execlaw_about_dismissed')) return;
 
   const overlay = document.createElement('div');
   overlay.className = 'about-overlay';
   overlay.innerHTML = `
     <div class="about-card">
-      <h2>🦡 Welcome to WebClaw</h2>
+      <h2>🦡 Welcome to ExeClaw</h2>
       <p class="about-subtitle">Ephemeral AI agent sessions in secure Firecracker microVMs</p>
 
       <h4>🚀 What is this?</h4>
-      <p>WebClaw lets you launch AI coding agents (powered by <strong>nullclaw</strong>) inside isolated Firecracker micro-virtual-machines. Each session gets its own Linux VM with full network access, so the AI agent can browse the web, run commands, write code, and more — all sandboxed from the host.</p>
+      <p>ExeClaw lets you launch AI coding agents (powered by <strong>nullclaw</strong>) inside isolated Firecracker micro-virtual-machines. Each session gets its own Linux VM with full network access, so the AI agent can browse the web, run commands, write code, and more — all sandboxed from the host.</p>
 
       <h4>🔒 How does it work?</h4>
       <ul>
@@ -1194,13 +1194,13 @@ function showAboutPopup(force) {
 
   overlay.querySelector('[data-action="close-about"]').onclick = () => {
     const dismiss = overlay.querySelector('#about-dismiss-check').checked;
-    if (dismiss) localStorage.setItem('webclaw_about_dismissed', '1');
+    if (dismiss) localStorage.setItem('execlaw_about_dismissed', '1');
     overlay.remove();
   };
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) {
       const dismiss = overlay.querySelector('#about-dismiss-check').checked;
-      if (dismiss) localStorage.setItem('webclaw_about_dismissed', '1');
+      if (dismiss) localStorage.setItem('execlaw_about_dismissed', '1');
       overlay.remove();
     }
   });
@@ -1213,14 +1213,14 @@ function getSettings() {
     emailOnIdleKill: true,
   };
   try {
-    const stored = localStorage.getItem('webclaw_settings');
+    const stored = localStorage.getItem('execlaw_settings');
     if (stored) return { ...defaults, ...JSON.parse(stored) };
   } catch(e) {}
   return defaults;
 }
 
 function saveSettings(settings) {
-  localStorage.setItem('webclaw_settings', JSON.stringify(settings));
+  localStorage.setItem('execlaw_settings', JSON.stringify(settings));
 }
 
 function showSettingsPopup() {
@@ -1353,7 +1353,7 @@ function downloadText(text, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename || 'webclaw-output.txt';
+  a.download = filename || 'execlaw-output.txt';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1365,7 +1365,7 @@ function downloadMarkdown(text, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename || 'webclaw-output.md';
+  a.download = filename || 'execlaw-output.md';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1376,7 +1376,7 @@ function downloadMarkdown(text, filename) {
 function downloadFullConversation(id) {
   const session = state.sessions.get(id);
   if (!session) return;
-  let md = `# WebClaw Conversation: ${session.name}\n`;
+  let md = `# ExeClaw Conversation: ${session.name}\n`;
   md += `**Model:** ${session.model}\n`;
   md += `**Provider:** ${session.provider}\n`;
   md += `**Date:** ${new Date().toISOString()}\n\n---\n\n`;
@@ -1386,7 +1386,7 @@ function downloadFullConversation(id) {
   }
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
   const safeName = session.name.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
-  downloadMarkdown(md, `webclaw-${safeName}-${ts}.md`);
+  downloadMarkdown(md, `execlaw-${safeName}-${ts}.md`);
 }
 
 // Build conversation transcript as plain text (used for email/VM prompt).
@@ -2278,8 +2278,8 @@ function updateOrCreateAssistantBubble(id, session) {
     <div>
       <div class="message-bubble">${bubbleHTML}</div>
       <div class="message-actions">
-        <button class="message-action-btn" onclick="WebClaw.copyMessage(this)" title="Copy text">&#x1F4CB; Copy</button>
-        <button class="message-action-btn" onclick="WebClaw.downloadMessage(this, 'assistant')" title="Download as file">&#x2B07; Download</button>
+        <button class="message-action-btn" onclick="ExeClaw.copyMessage(this)" title="Copy text">&#x1F4CB; Copy</button>
+        <button class="message-action-btn" onclick="ExeClaw.downloadMessage(this, 'assistant')" title="Download as file">&#x2B07; Download</button>
       </div>
     </div>
   `;
@@ -2309,8 +2309,8 @@ function appendMessageToChat(id, data) {
     <div>
       <div class="message-bubble">${bubbleHTML}</div>
       <div class="message-actions">
-        <button class="message-action-btn" onclick="WebClaw.copyMessage(this)" title="Copy text">&#x1F4CB; Copy</button>
-        <button class="message-action-btn" onclick="WebClaw.downloadMessage(this, '${role}')" title="Download as file">&#x2B07; Download</button>
+        <button class="message-action-btn" onclick="ExeClaw.copyMessage(this)" title="Copy text">&#x1F4CB; Copy</button>
+        <button class="message-action-btn" onclick="ExeClaw.downloadMessage(this, '${role}')" title="Download as file">&#x2B07; Download</button>
       </div>
     </div>
   `;
@@ -2345,7 +2345,7 @@ function handleSSEToolCall(id, data) {
   div.className = 'tool-call';
   div.id = 'tc-' + tcId;
   div.innerHTML = `
-    <div class="tool-call-header" onclick="WebClaw.toggleToolCall('${tcId}')">
+    <div class="tool-call-header" onclick="ExeClaw.toggleToolCall('${tcId}')">
       <span class="tool-call-icon">${icon}</span>
       <span class="tool-call-name">${escapeHtml(data.name || 'tool')}</span>
       <span class="tool-call-status${statusClass}" id="tc-status-${tcId}">${statusIcon}</span>
@@ -2360,8 +2360,8 @@ function handleSSEToolCall(id, data) {
         <pre id="tc-output-pre-${tcId}"></pre>
       </div>
       <div class="tool-call-actions">
-        <button class="message-action-btn" onclick="WebClaw.copyToolCall('${tcId}')" title="Copy tool call">&#x1F4CB; Copy</button>
-        <button class="message-action-btn" onclick="WebClaw.downloadToolCall('${tcId}')" title="Download tool call">&#x2B07; Download</button>
+        <button class="message-action-btn" onclick="ExeClaw.copyToolCall('${tcId}')" title="Copy tool call">&#x1F4CB; Copy</button>
+        <button class="message-action-btn" onclick="ExeClaw.downloadToolCall('${tcId}')" title="Download tool call">&#x2B07; Download</button>
       </div>
     </div>
   `;
@@ -2530,13 +2530,13 @@ function saveState() {
         // messages could be saved but may be very large
       });
     }
-    localStorage.setItem('webclaw_state', JSON.stringify(serialized));
+    localStorage.setItem('execlaw_state', JSON.stringify(serialized));
   } catch(e) { /* quota exceeded, ignore */ }
 }
 
 function loadState() {
   try {
-    const raw = localStorage.getItem('webclaw_state');
+    const raw = localStorage.getItem('execlaw_state');
     if (!raw) return;
     const data = JSON.parse(raw);
 
@@ -2624,7 +2624,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ===== Global API for inline handlers =====
-window.WebClaw = {
+window.ExeClaw = {
   copyCode,
   openLightbox,
   toggleToolCall,
@@ -2646,7 +2646,7 @@ window.WebClaw = {
     const msg = btn.closest('.message');
     const raw = msg?.dataset?.rawContent || getMessageRawText(msg);
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
-    downloadMarkdown(raw, `webclaw-${role}-${ts}.md`);
+    downloadMarkdown(raw, `execlaw-${role}-${ts}.md`);
   },
   copyToolCall(tcId) {
     const body = document.getElementById('tc-body-' + tcId);
@@ -2671,7 +2671,7 @@ window.WebClaw = {
       if (pre) text += `\n--- ${label} ---\n${pre}\n`;
     });
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
-    downloadText(text.trim(), `webclaw-${name}-${ts}.txt`);
+    downloadText(text.trim(), `execlaw-${name}-${ts}.txt`);
   },
 };
 
@@ -2784,9 +2784,9 @@ setInterval(pollSystemInfo, 10000);
 
 // Health check
 fetch('/api/health').then(r => r.ok ? r.json() : null).then(data => {
-  if (data) console.log('WebClaw backend healthy:', data);
+  if (data) console.log('ExeClaw backend healthy:', data);
 }).catch(() => {
-  console.warn('WebClaw backend not available');
+  console.warn('ExeClaw backend not available');
 });
 
 })();

@@ -1,4 +1,16 @@
-webclaw
+# Binary
+execlaw
+
+# VM assets (too large for git)
+vm-assets/vmlinux
 vm-assets/rootfs.ext4
-vm-assets/ubuntu-24.04.squashfs
-*.log
+rootfs.ext4
+
+# Runtime files
+/tmp/
+*.ext4
+*.socket
+
+# OS
+.DS_Store
+Thumbs.db

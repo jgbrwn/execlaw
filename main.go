@@ -485,7 +485,7 @@ func buildNullclawConfig(provider, apiKey, model string) []byte {
 }
 
 func prepareRootfs(sessionID, provider, apiKey, model string) (string, error) {
-	dstPath := fmt.Sprintf("/tmp/webclaw-%s.ext4", sessionID)
+	dstPath := fmt.Sprintf("/tmp/execlaw-%s.ext4", sessionID)
 
 	// Get absolute path to base rootfs.
 	absBase, err := filepath.Abs(vmBaseRootfsPath)
@@ -2077,7 +2077,7 @@ func (s *Server) handleSessionEmail(w http.ResponseWriter, r *http.Request) {
 	// Send email via exe.dev gateway.
 	emailBody := map[string]interface{}{
 		"to":      req.To,
-		"subject": fmt.Sprintf("WebClaw Session: %s", sess.Name),
+		"subject": fmt.Sprintf("ExeClaw Session: %s", sess.Name),
 		"body":    conversation,
 	}
 
@@ -2121,7 +2121,7 @@ func (s *Server) sendIdleKillEmail(sess *Session, to string) {
 
 	emailBody := map[string]interface{}{
 		"to":      to,
-		"subject": fmt.Sprintf("WebClaw Session (idle-killed): %s", sess.Name),
+		"subject": fmt.Sprintf("ExeClaw Session (idle-killed): %s", sess.Name),
 		"body":    fmt.Sprintf("This session was automatically terminated after inactivity.\n\nSession: %s\nModel: %s\nCreated: %s\n\n---\n\n%s", sess.Name, sess.Model, sess.CreatedAt.Format(time.RFC3339), conversation),
 	}
 
@@ -2236,7 +2236,7 @@ func (s *Server) setupRoutes() http.Handler {
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/" {
 				w.Header().Set("Content-Type", "text/html")
-				w.Write([]byte("<html><body><h1>WebClaw</h1><p>Static files not found. Place them in ./static/</p></body></html>"))
+				w.Write([]byte("<html><body><h1>ExeClaw</h1><p>Static files not found. Place them in ./static/</p></body></html>"))
 				return
 			}
 			http.NotFound(w, r)
@@ -2332,7 +2332,7 @@ func (s *Server) gracefulShutdown() {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("WebClaw server starting...")
+	log.Println("ExeClaw server starting...")
 
 	// 1. Verify KVM availability.
 	if !kvmAvailable() {
@@ -2396,10 +2396,10 @@ func main() {
 	}()
 
 	// 8. Start listening.
-	log.Printf("WebClaw server listening on %s", listenAddr)
+	log.Printf("ExeClaw server listening on %s", listenAddr)
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("HTTP server error: %v", err)
 	}
 
-	log.Println("WebClaw server stopped")
+	log.Println("ExeClaw server stopped")
 }
