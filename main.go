@@ -1664,20 +1664,22 @@ func (s *Server) handleExeDevNewVM(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &exeResp); err != nil {
 		// Not JSON - return raw response.
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"ok":      true,
-			"vmName":  req.VMName,
-			"url":     fmt.Sprintf("https://%s.exe.xyz/", req.VMName),
-			"raw":     string(body),
+			"ok":         true,
+			"vmName":     req.VMName,
+			"url":        fmt.Sprintf("https://%s.exe.xyz/", req.VMName),
+			"shelleyUrl": fmt.Sprintf("https://%s.shelley.exe.xyz/", req.VMName),
+			"raw":        string(body),
 		})
 		return
 	}
 
 	// Return structured response.
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"ok":      true,
-		"vmName":  req.VMName,
-		"url":     fmt.Sprintf("https://%s.exe.xyz/", req.VMName),
-		"exedev":  exeResp,
+		"ok":         true,
+		"vmName":     req.VMName,
+		"url":        fmt.Sprintf("https://%s.exe.xyz/", req.VMName),
+		"shelleyUrl": fmt.Sprintf("https://%s.shelley.exe.xyz/", req.VMName),
+		"exedev":     exeResp,
 	})
 }
 

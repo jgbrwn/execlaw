@@ -1424,7 +1424,7 @@ function showSendToVMDialog(sessionId) {
   overlay.className = 'settings-overlay';
   overlay.innerHTML = `
     <div class="settings-card">
-      <h3>\ud83d\ude80 Send to New exe.dev VM</h3>
+      <h3>\ud83d\udc21 Send to New exe.dev VM</h3>
       <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;line-height:1.5">
         Create a new exe.dev VM with this session transcript as the initial Shelley prompt.
         The agent on the new VM will pick up where this session left off.
@@ -1447,7 +1447,7 @@ function showSendToVMDialog(sessionId) {
 
       <div class="settings-actions">
         <button class="btn-settings-cancel" data-action="cancel">Cancel</button>
-        <button class="btn-settings-save" data-action="send" id="btn-send-vm">\ud83d\ude80 Create VM</button>
+        <button class="btn-settings-save" data-action="send" id="btn-send-vm">\ud83d\udc21 Create VM</button>
       </div>
     </div>
   `;
@@ -1496,17 +1496,18 @@ function showSendToVMDialog(sessionId) {
       // Show success popup with the URL
       const successOverlay = document.createElement('div');
       successOverlay.className = 'settings-overlay';
+      const shelleyUrl = data.shelleyUrl || data.url;
       successOverlay.innerHTML = `
         <div class="settings-card" style="text-align:center">
-          <div style="font-size:48px;margin-bottom:12px">\ud83c\udf89</div>
+          <div style="font-size:48px;margin-bottom:12px">\ud83d\udc21</div>
           <h3>VM Created Successfully!</h3>
-          <p style="font-size:14px;color:var(--text-secondary);margin:12px 0">Your new exe.dev VM is being set up with the session transcript as the initial prompt.</p>
+          <p style="font-size:14px;color:var(--text-secondary);margin:12px 0">Your new exe.dev VM is being set up with the session transcript as the initial Shelley prompt.</p>
           <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:14px;margin:16px 0;font-family:var(--font-mono)">
-            <a href="${escapeHtml(data.url)}" target="_blank" rel="noopener" style="color:var(--accent);font-size:15px;text-decoration:none">${escapeHtml(data.url)}</a>
+            <a href="${escapeHtml(shelleyUrl)}" target="_blank" rel="noopener" style="color:var(--accent);font-size:15px;text-decoration:none">${escapeHtml(shelleyUrl)}</a>
           </div>
           <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">Shelley will start working on the prompt once the VM boots (~10 seconds).</p>
           <div class="settings-actions" style="justify-content:center">
-            <button class="btn-settings-save" onclick="window.open('${escapeHtml(data.url)}','_blank');this.closest('.settings-overlay').remove()">Open VM</button>
+            <button class="btn-settings-save" onclick="window.open('${escapeHtml(shelleyUrl)}','_blank');this.closest('.settings-overlay').remove()">Open in Shelley</button>
             <button class="btn-settings-cancel" onclick="this.closest('.settings-overlay').remove()">Close</button>
           </div>
         </div>
@@ -1514,10 +1515,10 @@ function showSendToVMDialog(sessionId) {
       document.body.appendChild(successOverlay);
       successOverlay.addEventListener('click', (e) => { if (e.target === successOverlay) successOverlay.remove(); });
 
-      showToast('success', 'VM Created', `"${vmName}" is being set up at ${data.url}`);
+      showToast('success', 'VM Created', `"${vmName}" is being set up — opening Shelley...`);
     } catch (err) {
       sendBtn.disabled = false;
-      sendBtn.textContent = '\ud83d\ude80 Create VM';
+      sendBtn.textContent = '\ud83d\udc21 Create VM';
       showToast('error', 'VM Creation Failed', err.message);
     }
   };
@@ -1779,7 +1780,7 @@ function buildActiveHTML(id) {
       <div class="session-header-right">
         <button class="btn-sm" data-action="download-all" title="Download full conversation">&#x2B07; Save</button>
         <button class="btn-sm exedev-only" data-action="email" title="Email conversation">📧 Email</button>
-        <button class="btn-sm exedev-only" data-action="send-to-vm" title="Send session to a new exe.dev VM">🚀 New VM</button>
+        <button class="btn-sm exedev-only" data-action="send-to-vm" title="Send session to a new exe.dev VM">🐡 Send to exe</button>
         <button class="btn-sm" data-action="reconnect" title="Reconnect" style="display:none" id="btn-reconnect-${id}">🔄 Reconnect</button>
       </div>
     </div>
