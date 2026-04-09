@@ -714,7 +714,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
         <span class="gauge-text" id="gauge-text">--%</span>
       </div>
       <button class="btn-icon" id="btn-settings" title="Settings">⚙️</button>
-      <button class="btn-icon" id="btn-email-all" title="Email all sessions">📧</button>
+      <button class="btn-icon exedev-only" id="btn-email-all" title="Email all sessions">📧</button>
       <button class="btn-icon" id="btn-theme-toggle" title="Toggle theme">🌙</button>
       <button class="btn-icon" id="btn-about" title="About WebClaw">ℹ️</button>
     </div>
@@ -755,6 +755,7 @@ const state = {
   sessionCounter: 0,
   theme: 'dark',
   userEmail: '',          // detected from exe.dev proxy headers
+  isExeDev: false,        // true if running on exe.dev platform
 };
 
 function generateId() {
@@ -1226,6 +1227,12 @@ function showSettingsPopup() {
   const settings = getSettings();
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
+  const exeDevSection = state.isExeDev ? `
+      <div class="settings-group" style="margin-top:8px;padding-top:16px;border-top:1px solid var(--border-color)">
+        <label>🚀 exe.dev API Token</label>
+        <input type="password" id="settings-exedev-token" value="${escapeHtml(settings.exedevToken || '')}" placeholder="exe0.xxxxx or exe1.xxxxx" style="width:100%;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border-color);background:var(--bg-tertiary);color:var(--text-primary);font-family:var(--font-mono);font-size:12px" />
+        <div class="settings-hint">Required for "Send to New VM" feature. Generate with: <code>ssh exe.dev token</code><br/>Your token is stored in your browser only and sent to exe.dev directly for authentication.</div>
+      </div>` : '';
   overlay.innerHTML = `
     <div class="settings-card">
       <h3>⚙️ Settings</h3>
@@ -1239,13 +1246,14 @@ function showSettingsPopup() {
         <div class="settings-hint">Sessions are automatically terminated after this duration of inactivity. Range: 5 min (0.1h) to 7 days (168h). Default: 72h.</div>
       </div>
 
-      <div class="settings-group">
+      <div class="settings-group exedev-only">
         <label class="settings-toggle">
           <input type="checkbox" id="settings-email-kill" ${settings.emailOnIdleKill ? 'checked' : ''} />
           <span>Email session transcript when idle-killed</span>
         </label>
         <div class="settings-hint">When enabled, the full conversation will be emailed to your configured address before the session is terminated.</div>
       </div>
+      ${exeDevSection}
 
       <div class="settings-actions">
         <button class="btn-settings-cancel" data-action="cancel">Cancel</button>
@@ -1254,12 +1262,19 @@ function showSettingsPopup() {
     </div>
   `;
   document.body.appendChild(overlay);
+  updateExeDevVisibility();
 
   overlay.querySelector('[data-action="cancel"]').onclick = () => overlay.remove();
   overlay.querySelector('[data-action="save"]').onclick = () => {
     const hours = parseFloat(document.getElementById('settings-timeout').value) || 72;
-    const emailKill = document.getElementById('settings-email-kill').checked;
-    saveSettings({ idleTimeoutHours: Math.max(0.1, Math.min(168, hours)), emailOnIdleKill: emailKill });
+    const emailKill = document.getElementById('settings-email-kill');
+    const tokenInput = document.getElementById('settings-exedev-token');
+    const newSettings = {
+      idleTimeoutHours: Math.max(0.1, Math.min(168, hours)),
+      emailOnIdleKill: emailKill ? emailKill.checked : true,
+    };
+    if (tokenInput) newSettings.exedevToken = tokenInput.value.trim();
+    saveSettings(newSettings);
     showToast('success', 'Settings Saved', 'Settings will apply to newly created sessions.');
     overlay.remove();
   };
@@ -1273,8 +1288,18 @@ async function fetchUserInfo() {
     if (resp.ok) {
       const data = await resp.json();
       if (data.email) state.userEmail = data.email;
+      state.isExeDev = !!data.isExeDev;
+      updateExeDevVisibility();
     }
   } catch(e) { /* ignore - will just have empty email field */ }
+}
+
+// Show/hide exe.dev-only features based on platform detection.
+function updateExeDevVisibility() {
+  const exeOnly = document.querySelectorAll('.exedev-only');
+  exeOnly.forEach(el => {
+    el.style.display = state.isExeDev ? '' : 'none';
+  });
 }
 
 // ===== Idle-Killed Session UI =====
@@ -1362,6 +1387,146 @@ function downloadFullConversation(id) {
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0,19);
   const safeName = session.name.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
   downloadMarkdown(md, `webclaw-${safeName}-${ts}.md`);
+}
+
+// Build conversation transcript as plain text (used for email/VM prompt).
+function buildConversationText(id) {
+  const session = state.sessions.get(id);
+  if (!session) return '';
+  let text = `Session: ${session.name}\nModel: ${session.model}\nProvider: ${session.provider}\nDate: ${new Date().toISOString()}\n\n`;
+  for (const msg of session.messages) {
+    const role = msg.role === 'user' ? 'User' : 'Assistant';
+    text += `--- ${role} ---\n${msg.content || ''}\n\n`;
+  }
+  return text;
+}
+
+// ===== Send to exe.dev VM =====
+function showSendToVMDialog(sessionId) {
+  if (!state.isExeDev) {
+    showToast('error', 'Not Available', 'This feature requires running on exe.dev.');
+    return;
+  }
+
+  const settings = getSettings();
+  if (!settings.exedevToken) {
+    showToast('warning', 'Token Required', 'Set your exe.dev API token in \u2699\ufe0f Settings first.');
+    showSettingsPopup();
+    return;
+  }
+
+  const session = state.sessions.get(sessionId);
+  const transcript = buildConversationText(sessionId);
+  const sizeKB = Math.round(transcript.length / 1024);
+  const tooLarge = transcript.length > 60000;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'settings-overlay';
+  overlay.innerHTML = `
+    <div class="settings-card">
+      <h3>\ud83d\ude80 Send to New exe.dev VM</h3>
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;line-height:1.5">
+        Create a new exe.dev VM with this session transcript as the initial Shelley prompt.
+        The agent on the new VM will pick up where this session left off.
+      </p>
+
+      <div class="settings-group">
+        <label>VM Name</label>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input type="text" id="vm-name-input" placeholder="my-vm-name" style="flex:1;padding:8px 12px;border-radius:var(--radius-sm);border:1px solid var(--border-color);background:var(--bg-tertiary);color:var(--text-primary);font-family:var(--font-mono);font-size:14px" />
+          <span style="font-size:13px;color:var(--text-muted)">.exe.xyz</span>
+        </div>
+        <div class="settings-hint">Lowercase letters, numbers, hyphens. If the name is already taken, creation will fail.</div>
+      </div>
+
+      <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:12px;color:var(--text-secondary)">
+        <strong>Session:</strong> ${escapeHtml(session.name)}<br/>
+        <strong>Transcript size:</strong> ${sizeKB}KB${tooLarge ? ' <span style="color:var(--yellow)">(will be truncated to ~60KB)</span>' : ''}<br/>
+        <strong>Messages:</strong> ${session.messages.length}
+      </div>
+
+      <div class="settings-actions">
+        <button class="btn-settings-cancel" data-action="cancel">Cancel</button>
+        <button class="btn-settings-save" data-action="send" id="btn-send-vm">\ud83d\ude80 Create VM</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const nameInput = overlay.querySelector('#vm-name-input');
+  nameInput.focus();
+
+  overlay.querySelector('[data-action="cancel"]').onclick = () => overlay.remove();
+  overlay.querySelector('[data-action="send"]').onclick = async () => {
+    const vmName = nameInput.value.trim().toLowerCase();
+    if (!vmName) {
+      showToast('error', 'Name Required', 'Enter a VM name.');
+      nameInput.focus();
+      return;
+    }
+    if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(vmName)) {
+      showToast('error', 'Invalid Name', 'VM name must be lowercase alphanumeric with hyphens, starting with a letter or digit.');
+      nameInput.focus();
+      return;
+    }
+
+    const sendBtn = overlay.querySelector('#btn-send-vm');
+    sendBtn.disabled = true;
+    sendBtn.textContent = '\u23f3 Creating VM...';
+
+    try {
+      const resp = await fetch('/api/exedev/new', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vmName: vmName,
+          prompt: transcript,
+          token: settings.exedevToken,
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ message: resp.statusText }));
+        throw new Error(err.message || 'Failed to create VM');
+      }
+
+      const data = await resp.json();
+      overlay.remove();
+
+      // Show success popup with the URL
+      const successOverlay = document.createElement('div');
+      successOverlay.className = 'settings-overlay';
+      successOverlay.innerHTML = `
+        <div class="settings-card" style="text-align:center">
+          <div style="font-size:48px;margin-bottom:12px">\ud83c\udf89</div>
+          <h3>VM Created Successfully!</h3>
+          <p style="font-size:14px;color:var(--text-secondary);margin:12px 0">Your new exe.dev VM is being set up with the session transcript as the initial prompt.</p>
+          <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:14px;margin:16px 0;font-family:var(--font-mono)">
+            <a href="${escapeHtml(data.url)}" target="_blank" rel="noopener" style="color:var(--accent);font-size:15px;text-decoration:none">${escapeHtml(data.url)}</a>
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:16px">Shelley will start working on the prompt once the VM boots (~10 seconds).</p>
+          <div class="settings-actions" style="justify-content:center">
+            <button class="btn-settings-save" onclick="window.open('${escapeHtml(data.url)}','_blank');this.closest('.settings-overlay').remove()">Open VM</button>
+            <button class="btn-settings-cancel" onclick="this.closest('.settings-overlay').remove()">Close</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(successOverlay);
+      successOverlay.addEventListener('click', (e) => { if (e.target === successOverlay) successOverlay.remove(); });
+
+      showToast('success', 'VM Created', `"${vmName}" is being set up at ${data.url}`);
+    } catch (err) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = '\ud83d\ude80 Create VM';
+      showToast('error', 'VM Creation Failed', err.message);
+    }
+  };
+
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') overlay.querySelector('[data-action="send"]').click();
+  });
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 }
 
 // Get raw text content from a message (strips HTML)
@@ -1536,6 +1701,8 @@ function createSessionPanel(id) {
   bindActiveEvents(id);
   // Populate models
   updateModelDropdown(id);
+  // Show/hide exe.dev-only features
+  updateExeDevVisibility();
 }
 
 function buildConfigHTML(id, session) {
@@ -1611,7 +1778,8 @@ function buildActiveHTML(id) {
       </div>
       <div class="session-header-right">
         <button class="btn-sm" data-action="download-all" title="Download full conversation">&#x2B07; Save</button>
-        <button class="btn-sm" data-action="email" title="Email conversation">📧 Email</button>
+        <button class="btn-sm exedev-only" data-action="email" title="Email conversation">📧 Email</button>
+        <button class="btn-sm exedev-only" data-action="send-to-vm" title="Send session to a new exe.dev VM">🚀 New VM</button>
         <button class="btn-sm" data-action="reconnect" title="Reconnect" style="display:none" id="btn-reconnect-${id}">🔄 Reconnect</button>
       </div>
     </div>
@@ -1728,9 +1896,12 @@ function bindActiveEvents(id) {
   });
 
   // Email
-  active.querySelector('[data-action="email"]').addEventListener('click', () => {
-    showEmailDialog(id);
-  });
+  const emailBtn = active.querySelector('[data-action="email"]');
+  if (emailBtn) emailBtn.addEventListener('click', () => showEmailDialog(id));
+
+  // Send to VM
+  const vmBtn = active.querySelector('[data-action="send-to-vm"]');
+  if (vmBtn) vmBtn.addEventListener('click', () => showSendToVMDialog(id));
 
   // Reconnect
   const reconnectBtn = document.getElementById('btn-reconnect-' + id);

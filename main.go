@@ -1547,8 +1547,137 @@ func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	email := r.Header.Get("X-ExeDev-Email")
 	userID := r.Header.Get("X-ExeDev-UserID")
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"email":  email,
-		"userId": userID,
+		"email":    email,
+		"userId":   userID,
+		"isExeDev": isExeDevPlatform(),
+	})
+}
+
+// isExeDevPlatform checks if we're running on an exe.dev VM.
+func isExeDevPlatform() bool {
+	out, err := exec.Command("hostname", "-f").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.TrimSpace(string(out)), "exe.xyz")
+}
+
+func (s *Server) handlePlatformInfo(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"isExeDev": isExeDevPlatform(),
+	})
+}
+
+// ExeDevNewVMRequest is the JSON body for POST /api/exedev/new.
+type ExeDevNewVMRequest struct {
+	VMName    string `json:"vmName"`
+	Prompt    string `json:"prompt"`
+	Token     string `json:"token"`
+}
+
+func (s *Server) handleExeDevNewVM(w http.ResponseWriter, r *http.Request) {
+	if !isExeDevPlatform() {
+		jsonError(w, http.StatusForbidden, "not running on exe.dev platform")
+		return
+	}
+
+	var req ExeDevNewVMRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+
+	if req.Token == "" {
+		jsonError(w, http.StatusBadRequest, "exe.dev API token is required")
+		return
+	}
+
+	if req.VMName == "" {
+		jsonError(w, http.StatusBadRequest, "VM name is required")
+		return
+	}
+
+	// Validate VM name: alphanumeric + hyphens, 1-30 chars.
+	vmNameRegex := regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,29}$`)
+	if !vmNameRegex.MatchString(req.VMName) {
+		jsonError(w, http.StatusBadRequest, "VM name must be lowercase alphanumeric with hyphens, 1-30 chars, starting with a letter or digit")
+		return
+	}
+
+	// Build the command. The prompt goes as a shell-quoted argument.
+	// The exe.dev /exec endpoint accepts the command as the POST body.
+	// We need to properly quote the prompt for shell interpretation.
+	prompt := req.Prompt
+
+	// Truncate prompt if it would exceed the 64KB body limit.
+	// Reserve ~1KB for the command itself.
+	const maxPromptBytes = 60000
+	if len(prompt) > maxPromptBytes {
+		prompt = prompt[:maxPromptBytes] + "\n\n[...transcript truncated due to size limit...]"
+	}
+
+	// Shell-escape the prompt using single quotes (replace ' with '\'')
+	escapedPrompt := strings.ReplaceAll(prompt, "'", "'\\''")
+	cmdBody := fmt.Sprintf("new --json --name=%s --prompt='%s'", req.VMName, escapedPrompt)
+
+	// Check if command body is too large (64KB limit).
+	if len(cmdBody) > 64000 {
+		jsonError(w, http.StatusBadRequest, "session transcript too large for exe.dev API (max ~60KB). Try with a shorter session.")
+		return
+	}
+
+	log.Printf("Creating exe.dev VM '%s' with %d byte prompt", req.VMName, len(prompt))
+
+	// Call exe.dev /exec API.
+	exeReq, err := http.NewRequest("POST", "https://exe.dev/exec", strings.NewReader(cmdBody))
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "failed to create request")
+		return
+	}
+	exeReq.Header.Set("Authorization", "Bearer "+req.Token)
+	exeReq.Header.Set("Content-Type", "text/plain")
+
+	client := &http.Client{Timeout: 35 * time.Second} // exe.dev has 30s timeout
+	resp, err := client.Do(exeReq)
+	if err != nil {
+		jsonError(w, http.StatusBadGateway, "exe.dev API request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		errMsg := string(body)
+		if resp.StatusCode == 401 {
+			errMsg = "Invalid or expired exe.dev API token. Generate a new one with: ssh exe.dev token"
+		} else if resp.StatusCode == 422 {
+			errMsg = "exe.dev command failed: " + errMsg
+		}
+		log.Printf("exe.dev API error %d: %s", resp.StatusCode, errMsg)
+		jsonError(w, resp.StatusCode, errMsg)
+		return
+	}
+
+	// Try to parse JSON response from exe.dev.
+	var exeResp map[string]interface{}
+	if err := json.Unmarshal(body, &exeResp); err != nil {
+		// Not JSON - return raw response.
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"vmName":  req.VMName,
+			"url":     fmt.Sprintf("https://%s.exe.xyz/", req.VMName),
+			"raw":     string(body),
+		})
+		return
+	}
+
+	// Return structured response.
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"vmName":  req.VMName,
+		"url":     fmt.Sprintf("https://%s.exe.xyz/", req.VMName),
+		"exedev":  exeResp,
 	})
 }
 
@@ -2060,6 +2189,8 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/models/", s.methodGuard("GET", s.handleModels))
 	mux.HandleFunc("/api/userinfo", s.methodGuard("GET", s.handleUserInfo))
 	mux.HandleFunc("/api/system", s.methodGuard("GET", s.handleSystemInfo))
+	mux.HandleFunc("/api/platform", s.methodGuard("GET", s.handlePlatformInfo))
+	mux.HandleFunc("/api/exedev/new", s.methodGuard("POST", s.handleExeDevNewVM))
 
 	// Session routes - we need to handle different methods on the same path prefix.
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
