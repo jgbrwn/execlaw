@@ -1,0 +1,4 @@
+webclaw
+vm-assets/rootfs.ext4
+vm-assets/ubuntu-24.04.squashfs
+*.log
