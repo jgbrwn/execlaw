@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -135,6 +136,11 @@ type Session struct {
 	// Last user input for echo filtering
 	lastInputMu sync.Mutex
 	lastInput   string
+
+	// Agent idle detection timer
+	idleTimerMu sync.Mutex
+	idleTimer   *time.Timer
+	agentBusy   bool
 }
 
 // OutputParser is a simple state machine for parsing nullclaw serial output.
@@ -858,6 +864,39 @@ func (sess *Session) performLogin(ctx context.Context) {
 	log.Printf("Session %s: now active", sess.ID)
 }
 
+// resetIdleTimer resets the agent idle detection timer.
+// Called every time output is received from the agent.
+func (sess *Session) resetIdleTimer() {
+	sess.idleTimerMu.Lock()
+	defer sess.idleTimerMu.Unlock()
+
+	if !sess.agentBusy {
+		return
+	}
+
+	if sess.idleTimer != nil {
+		sess.idleTimer.Stop()
+	}
+	sess.idleTimer = time.AfterFunc(3*time.Second, func() {
+		sess.idleTimerMu.Lock()
+		sess.agentBusy = false
+		sess.idleTimerMu.Unlock()
+		sess.broadcastSSE(SSEEvent{Event: "agent_idle", Data: map[string]bool{"idle": true}})
+	})
+}
+
+// setAgentBusy marks the agent as busy and starts idle detection.
+func (sess *Session) setAgentBusy() {
+	sess.idleTimerMu.Lock()
+	defer sess.idleTimerMu.Unlock()
+
+	sess.agentBusy = true
+	if sess.idleTimer != nil {
+		sess.idleTimer.Stop()
+		sess.idleTimer = nil
+	}
+}
+
 // writeSerial writes data to the VM's serial console stdin.
 func (sess *Session) writeSerial(data string) {
 	sess.mu.Lock()
@@ -992,6 +1031,9 @@ func (p *OutputParser) parseLine(sess *Session, rawLine string) {
 		return
 	}
 
+	// Reset idle detection timer on any agent output.
+	sess.resetIdleTimer()
+
 	// Always filter pure boot noise even after agent starts (can appear in output)
 	if isBootNoise(trimmed) && !strings.Contains(trimmed, "Error") {
 		return
@@ -1075,9 +1117,10 @@ func (p *OutputParser) parseNormal(sess *Session, trimmed, line string) {
 		return
 	}
 
-	// Skip the "Type your message" prompt line.
-	if strings.Contains(trimmed, "Type your message") {
+	// "Type your message" prompt means agent finished and is waiting for input.
+	if strings.Contains(trimmed, "Type your message") || strings.Contains(trimmed, "Ctrl+D") {
 		p.flushTextBuf()
+		sess.broadcastSSE(SSEEvent{Event: "agent_idle", Data: map[string]bool{"idle": true}})
 		return
 	}
 
@@ -1329,6 +1372,85 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	info := getSystemMemInfo()
+	info["sessions"] = s.sessionCount()
+	info["maxSessions"] = maxSessions
+	jsonResponse(w, http.StatusOK, info)
+}
+
+// getSystemMemInfo reads /proc/meminfo and returns actual memory usage (excluding buffers/cache).
+func getSystemMemInfo() map[string]interface{} {
+	result := map[string]interface{}{
+		"totalMB":     0,
+		"usedMB":      0,
+		"availableMB": 0,
+		"percentUsed": 0.0,
+	}
+
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return result
+	}
+
+	var memTotal, memAvailable, memFree, buffers, cached, sReclaimable int64
+	for _, line := range strings.Split(string(data), "\n") {
+		var key string
+		var val int64
+		if n, _ := fmt.Sscanf(line, "%s %d", &key, &val); n == 2 {
+			switch key {
+			case "MemTotal:":
+				memTotal = val
+			case "MemAvailable:":
+				memAvailable = val
+			case "MemFree:":
+				memFree = val
+			case "Buffers:":
+				buffers = val
+			case "Cached:":
+				cached = val
+			case "SReclaimable:":
+				sReclaimable = val
+			}
+		}
+	}
+
+	// Actual used = Total - Free - Buffers - Cached - SReclaimable
+	// But MemAvailable is the best metric (kernel-calculated)
+	actualUsed := memTotal - memAvailable
+	if memAvailable == 0 {
+		// Fallback if MemAvailable not present
+		actualUsed = memTotal - memFree - buffers - cached - sReclaimable
+	}
+	if actualUsed < 0 {
+		actualUsed = 0
+	}
+
+	percentUsed := 0.0
+	if memTotal > 0 {
+		percentUsed = float64(actualUsed) / float64(memTotal) * 100.0
+	}
+
+	result["totalMB"] = memTotal / 1024
+	result["usedMB"] = actualUsed / 1024
+	result["availableMB"] = memAvailable / 1024
+	result["freeMB"] = memFree / 1024
+	result["buffersCacheMB"] = (buffers + cached + sReclaimable) / 1024
+	result["percentUsed"] = math.Round(percentUsed*10) / 10
+
+	// Load averages
+	if loadData, err := os.ReadFile("/proc/loadavg"); err == nil {
+		parts := strings.Fields(string(loadData))
+		if len(parts) >= 3 {
+			result["load1"] = parts[0]
+			result["load5"] = parts[1]
+			result["load15"] = parts[2]
+		}
+	}
+
+	return result
+}
+
 func (s *Server) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	email := r.Header.Get("X-ExeDev-Email")
 	userID := r.Header.Get("X-ExeDev-UserID")
@@ -1450,6 +1572,13 @@ func fetchOpenRouterFreeModels() ([]map[string]interface{}, error) {
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if s.sessionCount() >= maxSessions {
 		jsonError(w, http.StatusServiceUnavailable, "maximum number of concurrent sessions reached")
+		return
+	}
+
+	// Memory pressure check: block new sessions if >90% used.
+	sysInfo := getSystemMemInfo()
+	if pct, ok := sysInfo["percentUsed"].(float64); ok && pct > 90.0 {
+		jsonError(w, http.StatusServiceUnavailable, fmt.Sprintf("system memory pressure too high (%.1f%% used), cannot create new session", pct))
 		return
 	}
 
@@ -1652,6 +1781,10 @@ func (s *Server) handleSessionInput(w http.ResponseWriter, r *http.Request) {
 	sess.lastInput = req.Message
 	sess.lastInputMu.Unlock()
 
+	// Mark agent as busy and notify clients.
+	sess.setAgentBusy()
+	sess.broadcastSSE(SSEEvent{Event: "agent_busy", Data: map[string]bool{"busy": true}})
+
 	// Write message to serial console.
 	sess.writeSerial(req.Message + "\n")
 
@@ -1765,6 +1898,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/health", s.methodGuard("GET", s.handleHealth))
 	mux.HandleFunc("/api/models/", s.methodGuard("GET", s.handleModels))
 	mux.HandleFunc("/api/userinfo", s.methodGuard("GET", s.handleUserInfo))
+	mux.HandleFunc("/api/system", s.methodGuard("GET", s.handleSystemInfo))
 
 	// Session routes - we need to handle different methods on the same path prefix.
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
