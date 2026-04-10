@@ -268,9 +268,9 @@ download_vm_kernel() {
     print_info "Using Firecracker CI version: $CI_VERSION"
     
     # Query S3 for latest kernel
-    S3_LIST_URL="https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2"
+    S3_LIST_URL="https://s3.amazonaws.com/spec.ccfc.min/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2"
     KERNEL_KEY=$(curl -fsSL "$S3_LIST_URL" \
-        | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
+        | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+(?:\.[0-9]+)+)(?=</Key>)" \
         | sort -V | tail -1)
     
     if [ -z "$KERNEL_KEY" ]; then
@@ -327,9 +327,9 @@ build_vm_rootfs() {
     if [ ! -f "ubuntu-24.04.squashfs" ]; then
         print_info "Downloading Ubuntu 24.04 base image from Firecracker CI..."
         
-        S3_LIST_URL="https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2"
+        S3_LIST_URL="https://s3.amazonaws.com/spec.ccfc.min/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2"
         UBUNTU_KEY=$(curl -fsSL "$S3_LIST_URL" \
-            | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/ubuntu-[0-9]+\.[0-9]+\.squashfs)(?=</Key>)" \
+            | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/ubuntu-[0-9]+(?:\.[0-9]+)+\.squashfs)(?=</Key>)" \
             | sort -V | tail -1)
         
         if [ -z "$UBUNTU_KEY" ]; then
