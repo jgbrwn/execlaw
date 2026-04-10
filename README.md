@@ -131,7 +131,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now execlaw
 ```
 
-The server listens on `:8000` by default. On exe.dev, it's accessible at `https://VMNAME.exe.xyz:8000/`.
+The server listens on `:8000` by default. On exe.dev, it's accessible at `https://VMNAME.exe.xyz` (assuming that the default exe proxy port has not been changed for that VM).
 
 ### Configuration
 

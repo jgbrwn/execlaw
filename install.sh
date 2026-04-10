@@ -72,7 +72,7 @@ check_command() {
 
 get_latest_github_release() {
     local repo="$1"
-    curl -s "https://api.github.com/repos/${repo}/releases/latest" \
+    curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" \
         | grep -oP '"tag_name":\s*"\K[^"]+' || echo ""
 }
 
@@ -146,7 +146,7 @@ check_prerequisites() {
         print_warning "Missing packages: ${MISSING_PACKAGES[*]}"
         print_info "Installing missing packages..."
         $SUDO_CMD apt-get update -qq
-        $SUDO_CMD apt-get install -y ${MISSING_PACKAGES[*]}
+        $SUDO_CMD apt-get install -y "${MISSING_PACKAGES[@]}"
         print_success "Packages installed"
     else
         print_success "All required packages are installed"
@@ -258,18 +258,24 @@ download_vm_kernel() {
     
     ARCH="$(uname -m)"
     LATEST_FC_VERSION=$(get_latest_github_release "firecracker-microvm/firecracker")
-    CI_VERSION=$(echo "$LATEST_FC_VERSION" | sed 's/v//' | sed 's/\.[^.]*$//')
+    CI_VERSION="${LATEST_FC_VERSION%.*}"
+    
+    if [ -z "$LATEST_FC_VERSION" ] || [ -z "$CI_VERSION" ]; then
+        print_error "Failed to determine Firecracker CI version"
+        exit 1
+    fi
     
     print_info "Using Firecracker CI version: $CI_VERSION"
     
     # Query S3 for latest kernel
-    S3_LIST_URL="http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2"
-    KERNEL_KEY=$(curl -s "$S3_LIST_URL" \
+    S3_LIST_URL="https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2"
+    KERNEL_KEY=$(curl -fsSL "$S3_LIST_URL" \
         | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
         | sort -V | tail -1)
     
     if [ -z "$KERNEL_KEY" ]; then
         print_error "Failed to find kernel in S3"
+        print_info "Tried prefix: firecracker-ci/$CI_VERSION/$ARCH/vmlinux-"
         exit 1
     fi
     
@@ -310,19 +316,25 @@ build_vm_rootfs() {
     
     ARCH="$(uname -m)"
     LATEST_FC_VERSION=$(get_latest_github_release "firecracker-microvm/firecracker")
-    CI_VERSION=$(echo "$LATEST_FC_VERSION" | sed 's/v//' | sed 's/\.[^.]*$//')
+    CI_VERSION="${LATEST_FC_VERSION%.*}"
+    
+    if [ -z "$LATEST_FC_VERSION" ] || [ -z "$CI_VERSION" ]; then
+        print_error "Failed to determine Firecracker CI version"
+        exit 1
+    fi
     
     # Download Ubuntu squashfs if not present
     if [ ! -f "ubuntu-24.04.squashfs" ]; then
         print_info "Downloading Ubuntu 24.04 base image from Firecracker CI..."
         
-        S3_LIST_URL="http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2"
-        UBUNTU_KEY=$(curl -s "$S3_LIST_URL" \
+        S3_LIST_URL="https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2"
+        UBUNTU_KEY=$(curl -fsSL "$S3_LIST_URL" \
             | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/ubuntu-[0-9]+\.[0-9]+\.squashfs)(?=</Key>)" \
             | sort -V | tail -1)
         
         if [ -z "$UBUNTU_KEY" ]; then
             print_error "Failed to find Ubuntu squashfs in S3"
+            print_info "Tried prefix: firecracker-ci/$CI_VERSION/$ARCH/ubuntu-"
             exit 1
         fi
         
@@ -358,7 +370,17 @@ build_vm_rootfs() {
     fi
     
     print_info "Latest nullclaw version: $NCLAW_VERSION"
-    NCLAW_URL="https://github.com/nullclaw/nullclaw/releases/download/${NCLAW_VERSION}/nullclaw-linux-x86_64.bin"
+
+    case "$ARCH" in
+        x86_64) NCLAW_ARCH="x86_64" ;;
+        aarch64|arm64) NCLAW_ARCH="aarch64" ;;
+        *)
+            print_error "Unsupported architecture for nullclaw: $ARCH"
+            exit 1
+	    ;;
+    esac
+
+    NCLAW_URL="https://github.com/nullclaw/nullclaw/releases/download/${NCLAW_VERSION}/nullclaw-linux-${NCLAW_ARCH}.bin"
     
     if wget -q -O /tmp/nullclaw "$NCLAW_URL"; then
         chmod +x /tmp/nullclaw
@@ -618,22 +640,31 @@ print_success_message() {
     echo -e "     ${BLUE}sudo journalctl -u execlaw.service -f${NC}"
     echo
     echo "  4. Access ExeClaw web interface:"
-    echo -e "     ${BLUE}http://localhost:8000${NC}"
+    if hostname -f | grep -q 'exe\.xyz'; then
+        echo -e "     ${BLUE}DETECTED EXE.DEV VM!${NC}"
+        echo -e "     ${BLUE}https://$(hostname -f)${NC}"
+    fi
     echo
     
     # Try to get the server's IP
-    SERVER_IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K[0-9.]+')
+    SERVER_IP=$(curl -fsSL https://ifconfig.me)
     if [ -n "$SERVER_IP" ]; then
-        echo "  Or from another machine:"
+	echo "  If NOT on an exe.dev VM, use the IP (or your FQDN that resolves to the VM's IP):"
         echo -e "     ${BLUE}http://${SERVER_IP}:8000${NC}"
         echo
+	echo -e "${YELLOW}NOTE! Non-exe.dev platform deployments are unprotected (no auth!) and no SSL termination${NC}"
+	echo -e "${YELLOW}Caddy Server can proxy and terminate SSL to this service and recommend to use basic auth:${NC}"
+	echo -e "${YELLOW}https://caddyserver.com/docs/install${NC}"
+	echo
+	echo -e "${YELLOW}*** YOU CAN SAFELY IGNORE THIS IF ON AN EXE.DEV VM! (unless you decide to make the VM public) ***${NC}"
+	echo
     fi
     
     print_info "ExeClaw is configured to run on port 8000"
     print_info "VM network uses subnet 10.200.0.0/16"
     echo
     
-    echo -e "${YELLOW}Important Notes:${NC}"
+    echo -e "${YELLOW}Important Notes (mostly only a concern on NON-exe.dev platforms)):${NC}"
     echo "  • Make sure port 8000 is accessible (check firewall rules)"
     echo "  • VMs require internet access - ensure NAT/MASQUERADE is working"
     echo "  • Each VM session gets isolated Firecracker microVM"
