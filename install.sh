@@ -108,6 +108,18 @@ check_prerequisites() {
         else
             print_warning "KVM device exists but may not be accessible to current user"
             print_info "You may need to add your user to the 'kvm' group: sudo usermod -aG kvm \$USER"
+            print_info "Trying this now..."
+            # Determine the actual user
+            REAL_USER=${SUDO_USER:-$USER}
+            echo "Targeting user: $REAL_USER"
+            # Check if the kvm group exists before trying to join it
+            if getent group kvm > /dev/null; then
+                sudo usermod -aG kvm "$REAL_USER"
+                echo "Success: $REAL_USER has been added to the kvm group."
+                echo "Please log out and back in for changes to take effect."
+	    else
+                echo "Error: The 'kvm' group does not exist on this system."
+	    fi
         fi
     else
         print_error "/dev/kvm not found. KVM support is required for Firecracker."
